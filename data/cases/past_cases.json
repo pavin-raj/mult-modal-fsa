@@ -1,0 +1,38 @@
+[
+  {
+    "case_id": "2025-0842",
+    "date": "2025-11-12",
+    "equipment_model": "X-450 Centrifugal Pump",
+    "problem": "Vibration + visible seal leak from bottom of housing. Grinding noise reported by operator.",
+    "root_cause": "Worn impeller shaft (0.004\" runout) causing seal face damage and misalignment.",
+    "resolution": "Replaced shaft assembly, new mechanical seal (SEAL-X450-22), both bearings. Performed precision alignment.",
+    "outcome": "Resolved - unit running at 0.8 mm/s vibration after repair",
+    "technician_notes": "Always check shaft runout with dial indicator before installing new seal. Customer had skipped the last two quarterly services.",
+    "duration_hours": 4.5,
+    "parts_used": ["SEAL-X450-22", "SHAFT-X450", "BEARING-6205"]
+  },
+  {
+    "case_id": "2026-0317",
+    "date": "2026-03-05",
+    "equipment_model": "X-450 Centrifugal Pump",
+    "problem": "Grinding noise from motor end + housing temperature 92°C (normal 65°C).",
+    "root_cause": "Drive end bearing failure due to insufficient lubrication and contamination.",
+    "resolution": "Replaced drive end and non-drive end bearings. Cleaned housing, installed new grease fittings and performed full alignment check.",
+    "outcome": "Resolved. Vibration reduced from 4.2 to 0.6 mm/s.",
+    "technician_notes": "Customer admitted to skipping the last two scheduled services. Added reminder in CMMS.",
+    "duration_hours": 3.25,
+    "parts_used": ["BEARING-DE-6205", "BEARING-NDE-6205"]
+  },
+  {
+    "case_id": "2026-0199",
+    "date": "2026-02-18",
+    "equipment_model": "X-450 Centrifugal Pump",
+    "problem": "Sudden drop in flow rate (from 420 GPM to 280 GPM) with increased motor amps.",
+    "root_cause": "Partial blockage in impeller vanes from process debris + worn impeller.",
+    "resolution": "Removed pump, cleaned impeller, replaced impeller with new stainless unit. Verified NPSH available.",
+    "outcome": "Flow restored to 435 GPM. No further issues.",
+    "technician_notes": "Recommend installing suction strainer on this application.",
+    "duration_hours": 5.0,
+    "parts_used": ["IMPELLER-X450-SS"]
+  }
+]

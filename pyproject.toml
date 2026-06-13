@@ -1,0 +1,25 @@
+[project]
+name = "multi-modal-fsa"
+version = "1.0.0"
+description = "Multi-Modal AI Field Service Assistant"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.9.0",
+    "langgraph>=0.2.0",
+    "langchain-ollama>=0.2.0",
+    "llama-index>=0.11.0",
+    "chromadb>=0.5.0",
+    "Pillow>=10.4.0",
+    "opencv-python-headless>=4.10.0",
+    "faster-whisper>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=24.4.0",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

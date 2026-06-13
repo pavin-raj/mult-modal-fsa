@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MM-FSA • Field Service Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+        
+        :root {
+            --primary: #0f172a;
+        }
+        
+        body {
+            font-family: 'Inter', system_ui, sans-serif;
+        }
+        
+        .font-display {
+            font-family: 'Space Grotesk', 'Inter', sans-serif;
+            font-weight: 600;
+        }
+
+        .tech-card {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .tech-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 14px 18px;
+            border-radius: 18px;
+            margin-bottom: 12px;
+            line-height: 1.45;
+        }
+        
+        .user-message {
+            background: #0f172a;
+            color: white;
+            border-bottom-right-radius: 4px;
+            margin-left: auto;
+        }
+        
+        .assistant-message {
+            background: #f1f5f9;
+            color: #0f172a;
+            border-bottom-left-radius: 4px;
+        }
+
+        .step-card {
+            transition: all 0.2s ease;
+        }
+
+        .step-card.completed {
+            border-color: #22c55e;
+            background-color: #f0fdf4;
+        }
+
+        .modal {
+            animation: fadeInScale 0.2s ease forwards;
+        }
+
+        .camera-preview {
+            border: 3px solid #0f172a;
+            box-shadow: 0 0 0 8px #1e2937;
+        }
+
+        .status-dot {
+            animation: pulse 2s infinite;
+        }
+
+        .guidance-step {
+            position: relative;
+        }
+        
+        .guidance-step::before {
+            content: '';
+            position: absolute;
+            left: 19px;
+            top: 42px;
+            bottom: -8px;
+            width: 3px;
+            background: #e2e8f0;
+        }
+        
+        .guidance-step:last-child::before {
+            display: none;
+        }
+
+        .metric {
+            font-variant-numeric: tabular-nums;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200">
+    <!-- Top Navigation -->
+    <nav class="border-b border-slate-800 bg-slate-900">
+        <div class="max-w-screen-2xl mx-auto">
+            <div class="px-8 py-4 flex items-center justify-between">
+                <div class="flex items-center gap-x-3">
+                    <div class="w-10 h-10 bg-emerald-500 rounded-2xl flex items-center justify-center">
+                        <i class="fa-solid fa-wrench text-white text-2xl"></i>
+                    </div>
+                    <div>
+                        <span class="font-display text-2xl font-semibold tracking-tighter">MM-FSA</span>
+                        <span class="text-emerald-400 text-sm font-medium ml-1.5">v1.0</span>
+                    </div>
+                    <div class="ml-3 px-3 py-1 bg-slate-800 rounded-full text-xs font-medium flex items-center gap-x-1.5">
+                        <div class="w-2 h-2 bg-emerald-400 rounded-full status-dot"></div>
+                        <span class="text-emerald-300">Online • Local Models</span>
+                    </div>
+                </div>
+                
+                <div class="flex items-center gap-x-4">
+                    <div class="flex items-center gap-x-2 text-sm">
+                        <div class="px-3 py-1.5 bg-slate-800 rounded-xl flex items-center gap-x-2 text-xs">
+                            <i class="fa-solid fa-user text-emerald-400"></i>
+                            <span class="font-medium">Alex Rivera</span>
+                            <span class="text-slate-500">•</span>
+                            <span class="text-emerald-300">Senior Tech</span>
+                        </div>
+                    </div>
+                    
+                    <div onclick="showSessionInfo()" 
+                         class="flex items-center gap-x-2 px-4 py-2 hover:bg-slate-800 rounded-2xl cursor-pointer text-sm">
+                        <i class="fa-solid fa-history text-slate-400"></i>
+                        <span class="font-medium text-sm">Session #<span id="session-id-display">demo-001</span></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="max-w-screen-2xl mx-auto px-8 py-6">
+        <!-- Header -->
+        <div class="flex items-end justify-between mb-6">
+            <div>
+                <h1 class="font-display text-4xl font-semibold tracking-tighter">Multi-Modal Field Service Assistant</h1>
+                <p class="text-slate-400 mt-1 text-lg">Hands-free vision + voice + agentic guidance for industrial equipment</p>
+            </div>
+            
+            <div class="flex items-center gap-x-3">
+                <div class="px-4 py-2 bg-slate-900 border border-slate-700 rounded-3xl flex items-center text-sm">
+                    <div class="flex -space-x-1 mr-3">
+                        <div class="w-6 h-6 bg-blue-500 rounded-full border border-slate-900 flex items-center justify-center text-[10px]">V</div>
+                        <div class="w-6 h-6 bg-purple-500 rounded-full border border-slate-900 flex items-center justify-center text-[10px]">S</div>
+                        <div class="w-6 h-6 bg-amber-500 rounded-full border border-slate-900 flex items-center justify-center text-[10px]">R</div>
+                    </div>
+                    <span class="text-xs font-medium text-slate-300">Vision • Speech • RAG + Agent</span>
+                </div>
+                
+                <button onclick="resetSession()" 
+                        class="px-4 py-2 text-sm font-medium flex items-center gap-x-2 bg-slate-800 hover:bg-slate-700 transition-colors rounded-3xl border border-slate-700">
+                    <i class="fa-solid fa-redo"></i>
+                    <span>Reset Session</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            <!-- LEFT: Camera + Input -->
+            <div class="lg:col-span-5 space-y-6">
+                
+                <!-- Camera Panel -->
+                <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5 tech-card">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center gap-x-2">
+                            <i class="fa-solid fa-camera text-emerald-400"></i>
+                            <span class="font-semibold">Live Camera Feed</span>
+                        </div>
+                        <div class="text-xs px-3 py-1 bg-emerald-900/30 text-emerald-300 rounded-2xl font-medium flex items-center gap-x-1">
+                            <i class="fa-solid fa-circle text-[8px]"></i>
+                            <span>READY</span>
+                        </div>
+                    </div>
+                    
+                    <div class="relative rounded-2xl overflow-hidden bg-black aspect-video flex items-center justify-center border border-slate-700" id="camera-container">
+                        <video id="camera-preview" autoplay playsinline class="w-full h-full object-cover hidden"></video>
+                        
+                        <div id="camera-placeholder" class="text-center p-8">
+                            <div class="w-16 h-16 mx-auto bg-slate-800 rounded-2xl flex items-center justify-center mb-4">
+                                <i class="fa-solid fa-camera-retro text-4xl text-slate-500"></i>
+                            </div>
+                            <p class="text-slate-400 text-sm">Point camera at equipment</p>
+                            <p class="text-xs text-slate-500 mt-1">or upload a photo</p>
+                        </div>
+                        
+                        <div id="captured-image-preview" class="hidden absolute inset-0">
+                            <img id="captured-img" class="w-full h-full object-cover" alt="Captured equipment">
+                            <div class="absolute top-3 right-3">
+                                <button onclick="clearCapturedImage()" 
+                                        class="bg-black/70 hover:bg-red-600 text-white text-xs px-3 py-1 rounded-2xl flex items-center gap-x-1 transition-colors">
+                                    <i class="fa-solid fa-times"></i>
+                                    <span class="text-[10px]">Clear</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex gap-3 mt-4">
+                        <button onclick="startCamera()" 
+                                class="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 transition-colors text-white text-sm font-semibold rounded-2xl flex items-center justify-center gap-x-2">
+                            <i class="fa-solid fa-video"></i>
+                            <span>Start Camera</span>
+                        </button>
+                        
+                        <button onclick="capturePhoto()" 
+                                class="flex-1 py-3 px-4 bg-slate-800 hover:bg-slate-700 transition-colors text-sm font-semibold rounded-2xl flex items-center justify-center gap-x-2 border border-slate-600">
+                            <i class="fa-solid fa-camera"></i>
+                            <span>Capture Photo</span>
+                        </button>
+                        
+                        <label class="flex-1 py-3 px-4 bg-slate-800 hover:bg-slate-700 transition-colors text-sm font-semibold rounded-2xl flex items-center justify-center gap-x-2 border border-slate-600 cursor-pointer">
+                            <i class="fa-solid fa-upload"></i>
+                            <span>Upload</span>
+                            <input type="file" accept="image/*" class="hidden" onchange="uploadImage(event)">
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Voice Controls -->
+                <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5 tech-card">
+                    <div class="flex items-center gap-x-2 mb-4">
+                        <i class="fa-solid fa-microphone text-purple-400"></i>
+                        <span class="font-semibold">Voice Interface (Hands-Free)</span>
+                    </div>
+                    
+                    <div class="flex items-center gap-3">
+                        <button onclick="startVoiceInput()" 
+                                class="flex-1 bg-purple-600 hover:bg-purple-500 transition-all active:scale-[0.985] text-white py-3.5 px-6 rounded-2xl font-semibold flex items-center justify-center gap-x-3 text-base">
+                            <i class="fa-solid fa-microphone text-xl"></i>
+                            <span id="voice-btn-text">Hold to Speak</span>
+                        </button>
+                        
+                        <button onclick="speakLastResponse()" 
+                                class="px-5 py-3.5 bg-slate-800 hover:bg-slate-700 transition-colors rounded-2xl border border-slate-600 flex items-center gap-x-2 text-sm font-medium">
+                            <i class="fa-solid fa-volume-up"></i>
+                            <span>Replay</span>
+                        </button>
+                    </div>
+                    
+                    <div class="mt-3 text-xs text-slate-400 flex items-center gap-x-1.5">
+                        <i class="fa-solid fa-info-circle"></i>
+                        <span>Say: "Walk me through replacing the seal" or "What does this look like?"</span>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- CENTER + RIGHT: Chat + Agent Output -->
+            <div class="lg:col-span-7 space-y-6">
+                
+                <!-- Chat / Conversation -->
+                <div class="bg-slate-900 border border-slate-700 rounded-3xl flex flex-col h-[420px]">
+                    <div class="px-5 py-4 border-b border-slate-700 flex items-center justify-between">
+                        <div class="flex items-center gap-x-2">
+                            <span class="font-semibold">Conversation</span>
+                            <div class="text-[10px] px-2 py-px bg-slate-800 text-slate-400 rounded font-mono">LIVE</div>
+                        </div>
+                        <div class="text-xs text-slate-400">Session: <span id="current-session" class="font-mono text-emerald-300">demo-001</span></div>
+                    </div>
+                    
+                    <div id="chat-messages" class="flex-1 overflow-y-auto p-5 space-y-1 text-sm custom-scroll">
+                        <!-- Messages populated by JS -->
+                    </div>
+                    
+                    <div class="p-4 border-t border-slate-700">
+                        <div class="flex gap-2">
+                            <input id="text-input" 
+                                   type="text" 
+                                   placeholder="Type a question or describe what you see..."
+                                   class="flex-1 bg-slate-800 border border-slate-700 text-sm rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-500"
+                                   onkeypress="if (event.key === 'Enter') sendTextMessage()">
+                            <button onclick="sendTextMessage()" 
+                                    class="bg-emerald-600 hover:bg-emerald-500 transition-colors px-6 rounded-2xl font-semibold flex items-center">
+                                <i class="fa-solid fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agent Guidance Panel -->
+                <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5 tech-card">
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex items-center gap-x-2">
+                            <i class="fa-solid fa-robot text-amber-400"></i>
+                            <span class="font-semibold">Agentic Guidance</span>
+                        </div>
+                        <div id="confidence-badge" 
+                             class="hidden text-xs font-mono px-3 py-1 rounded-2xl bg-slate-800 border border-slate-600 items-center gap-x-1">
+                            <span>Confidence:</span> 
+                            <span id="confidence-value" class="font-semibold"></span>
+                        </div>
+                    </div>
+
+                    <div id="guidance-panel" class="min-h-[180px]">
+                        <!-- Dynamically populated by JS -->
+                        <div class="text-center py-8 text-slate-400 text-sm">
+                            <i class="fa-solid fa-lightbulb text-2xl mb-3 block text-slate-500"></i>
+                            <p>Capture an image or ask a question to receive<br>step-by-step guidance and diagnostics.</p>
+                        </div>
+                    </div>
+                    
+                    <div id="agent-actions" class="hidden pt-4 border-t border-slate-700 flex gap-2 flex-wrap">
+                        <button onclick="confirmNextStep()" 
+                                class="px-5 py-2 text-sm bg-emerald-600 hover:bg-emerald-500 transition-colors font-medium rounded-2xl flex items-center gap-x-2">
+                            <i class="fa-solid fa-check"></i>
+                            <span>Confirm &amp; Continue</span>
+                        </button>
+                        <button onclick="askForMoreInfo()" 
+                                class="px-5 py-2 text-sm bg-slate-700 hover:bg-slate-600 transition-colors font-medium rounded-2xl flex items-center gap-x-2">
+                            <i class="fa-solid fa-question"></i>
+                            <span>Ask Clarification</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Status Bar -->
+        <div class="mt-6 flex items-center justify-between text-xs text-slate-400 px-1">
+            <div class="flex items-center gap-x-5">
+                <div>Backend: <span class="font-mono text-emerald-300">http://localhost:8000</span></div>
+                <div>Models: <span class="font-mono">Llama-3.2 + Vision + faster-whisper</span></div>
+            </div>
+            <div class="flex items-center gap-x-2">
+                <div onclick="runDemoScenario()" class="cursor-pointer flex items-center gap-x-1.5 px-3 py-1 hover:bg-slate-800 rounded-2xl transition-colors">
+                    <i class="fa-solid fa-play text-emerald-400"></i>
+                    <span class="text-emerald-300 font-medium">Run Demo Scenario</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== CONFIG ====================
+        const API_BASE = "http://localhost:8000";
+        let currentSessionId = "demo-" + Math.floor(Math.random() * 10000);
+        let capturedImageBase64 = null;
+        let lastAssistantResponse = "";
+        let currentPlan = null;
+
+        document.getElementById("session-id-display").textContent = currentSessionId;
+        document.getElementById("current-session").textContent = currentSessionId;
+
+        // ==================== TAILWIND ====================
+        function initTailwind() {
+            // Already using CDN, can extend if needed
+        }
+
+        // ==================== CHAT ====================
+        function addMessage(content, isUser = false, extra = "") {
+            const container = document.getElementById("chat-messages");
+            const div = document.createElement("div");
+            div.className = `message ${isUser ? 'user-message' : 'assistant-message'} flex items-start gap-3`;
+            
+            if (isUser) {
+                div.innerHTML = `
+                    <div class="flex-1">
+                        <div class="text-sm">${content}</div>
+                    </div>
+                `;
+            } else {
+                div.innerHTML = `
+                    <div class="w-7 h-7 rounded-full bg-emerald-500 flex-shrink-0 mt-0.5 flex items-center justify-center">
+                        <i class="fa-solid fa-robot text-white text-xs"></i>
+                    </div>
+                    <div class="flex-1">
+                        <div class="text-sm">${content}</div>
+                        ${extra ? `<div class="text-[10px] text-emerald-400 mt-1 font-medium">${extra}</div>` : ''}
+                    </div>
+                `;
+            }
+            
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function clearChat() {
+            document.getElementById("chat-messages").innerHTML = "";
+        }
+
+        // ==================== CAMERA ====================
+        let stream = null;
+
+        async function startCamera() {
+            const preview = document.getElementById("camera-preview");
+            const placeholder = document.getElementById("camera-placeholder");
+            
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" } 
+                });
+                preview.srcObject = stream;
+                preview.classList.remove("hidden");
+                placeholder.classList.add("hidden");
+            } catch (err) {
+                alert("Could not access camera: " + err.message);
+                console.error(err);
+            }
+        }
+
+        function capturePhoto() {
+            const preview = document.getElementById("camera-preview");
+            const placeholder = document.getElementById("camera-placeholder");
+            const capturedContainer = document.getElementById("captured-image-preview");
+            const img = document.getElementById("captured-img");
+            
+            if (!preview.srcObject) {
+                // fallback to file upload simulation
+                alert("Start the camera first or use the Upload button.");
+                return;
+            }
+
+            const canvas = document.createElement("canvas");
+            canvas.width = preview.videoWidth;
+            canvas.height = preview.videoHeight;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(preview, 0, 0);
+            
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+            capturedImageBase64 = dataUrl.split(",")[1]; // base64 without prefix
+            
+            img.src = dataUrl;
+            capturedContainer.classList.remove("hidden");
+            preview.classList.add("hidden");
+            placeholder.classList.add("hidden");
+            
+            // Stop camera after capture
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            addMessage("Photo captured and attached.", false, "Vision input ready");
+        }
+
+        function uploadImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const dataUrl = e.target.result;
+                capturedImageBase64 = dataUrl.split(",")[1];
+                
+                const capturedContainer = document.getElementById("captured-image-preview");
+                const img = document.getElementById("captured-img");
+                const placeholder = document.getElementById("camera-placeholder");
+                const preview = document.getElementById("camera-preview");
+                
+                img.src = dataUrl;
+                capturedContainer.classList.remove("hidden");
+                preview.classList.add("hidden");
+                placeholder.classList.add("hidden");
+                
+                addMessage("Photo uploaded and attached.", false, "Vision input ready");
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function clearCapturedImage() {
+            capturedImageBase64 = null;
+            const capturedContainer = document.getElementById("captured-image-preview");
+            const placeholder = document.getElementById("camera-placeholder");
+            const preview = document.getElementById("camera-preview");
+            
+            capturedContainer.classList.add("hidden");
+            placeholder.classList.remove("hidden");
+            preview.classList.add("hidden");
+        }
+
+        // ==================== VOICE ====================
+        let recognition = null;
+
+        function startVoiceInput() {
+            const btn = document.getElementById("voice-btn-text");
+            
+            if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+                alert("Voice input not supported in this browser. Use the text box instead.");
+                return;
+            }
+            
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+            
+            recognition.onstart = () => {
+                btn.innerHTML = `<i class="fa-solid fa-stop text-xl"></i> <span>Listening...</span>`;
+                btn.parentElement.classList.add("!bg-red-600");
+            };
+            
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                addMessage(transcript, true);
+                processUserInput(transcript);
+            };
+            
+            recognition.onerror = (event) => {
+                console.error("Speech recognition error", event);
+                btn.innerHTML = `Hold to Speak`;
+                btn.parentElement.classList.remove("!bg-red-600");
+            };
+            
+            recognition.onend = () => {
+                btn.innerHTML = `Hold to Speak`;
+                btn.parentElement.classList.remove("!bg-red-600");
+            };
+            
+            recognition.start();
+        }
+
+        async function speakLastResponse() {
+            if (!lastAssistantResponse) {
+                lastAssistantResponse = "No previous response to play.";
+            }
+            
+            // Use browser TTS as reliable fallback
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(lastAssistantResponse);
+                utterance.rate = 0.95;
+                utterance.pitch = 1.0;
+                speechSynthesis.speak(utterance);
+            } else {
+                // Could call backend TTS endpoint here
+                alert("Browser does not support speech synthesis.");
+            }
+        }
+
+        // ==================== CORE LOGIC ====================
+        async function sendTextMessage() {
+            const input = document.getElementById("text-input");
+            const value = input.value.trim();
+            if (!value) return;
+            
+            addMessage(value, true);
+            input.value = "";
+            
+            await processUserInput(value);
+        }
+
+        async function processUserInput(userText) {
+            const guidancePanel = document.getElementById("guidance-panel");
+            const actions = document.getElementById("agent-actions");
+            
+            // Show loading state
+            guidancePanel.innerHTML = `
+                <div class="flex items-center gap-3 py-4 px-1">
+                    <div class="animate-spin h-5 w-5 border-2 border-emerald-400 border-t-transparent rounded-full"></div>
+                    <span class="text-sm font-medium text-emerald-300">Agent is reasoning across vision, knowledge base, and safety rules...</span>
+                </div>
+            `;
+            actions.classList.add("hidden");
+
+            try {
+                const payload = {
+                    session_id: currentSessionId,
+                    transcript: userText,
+                    image_b64: capturedImageBase64 || null,
+                    force_full_agent: true
+                };
+
+                const response = await fetch(`${API_BASE}/get-guidance`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Backend error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                // Update UI
+                displayAgentResponse(data);
+                
+                lastAssistantResponse = data.voice_text || data.immediate_response;
+                
+                // Store current plan
+                currentPlan = data.plan;
+                
+                // Update session display
+                if (data.session_id) {
+                    currentSessionId = data.session_id;
+                    document.getElementById("current-session").textContent = currentSessionId;
+                    document.getElementById("session-id-display").textContent = currentSessionId;
+                }
+
+            } catch (error) {
+                console.error(error);
+                guidancePanel.innerHTML = `
+                    <div class="p-4 bg-red-900/20 border border-red-800 rounded-2xl text-sm">
+                        <div class="font-medium text-red-300">Error connecting to assistant</div>
+                        <div class="text-red-400 mt-1 text-xs">${error.message}</div>
+                        <div class="mt-2 text-[10px]">Make sure the backend is running on port 8000.</div>
+                    </div>
+                `;
+            }
+        }
+
+        function displayAgentResponse(data) {
+            const panel = document.getElementById("guidance-panel");
+            const actions = document.getElementById("agent-actions");
+            const badge = document.getElementById("confidence-badge");
+            
+            let html = `<div class="space-y-4">`;
+            
+            // Immediate response + Vision summary
+            if (data.immediate_response) {
+                html += `
+                    <div>
+                        <div class="text-xs uppercase tracking-widest font-medium text-emerald-400 mb-1">DIAGNOSIS</div>
+                        <div class="text-base font-medium leading-snug">${data.immediate_response}</div>
+                    </div>
+                `;
+            }
+            
+            // Vision info if present
+            if (data.plan && data.plan.vision_analysis) {
+                const v = data.plan.vision_analysis;
+                html += `<div class="text-xs bg-slate-800 px-3 py-2 rounded-2xl border border-slate-700">
+                    <span class="font-medium">Vision:</span> ${v.equipment_model || 'Equipment identified'} — ${v.detected_faults?.join(', ') || 'No faults listed'}
+                </div>`;
+            }
+            
+            // Structured Plan
+            if (data.plan && data.plan.steps && data.plan.steps.length > 0) {
+                html += `<div><div class="text-xs uppercase tracking-widest font-medium text-emerald-400 mb-2">RECOMMENDED STEPS</div>`;
+                
+                data.plan.steps.forEach((step, i) => {
+                    const statusClass = step.status === 'completed' ? 'completed' : '';
+                    html += `
+                        <div class="guidance-step step-card ${statusClass} border border-slate-700 bg-slate-800/60 rounded-2xl p-3 mb-2 text-sm">
+                            <div class="flex items-start gap-3">
+                                <div class="w-6 h-6 flex-shrink-0 rounded-full bg-slate-700 text-xs flex items-center justify-center font-mono mt-0.5">${step.step_number}</div>
+                                <div class="flex-1">
+                                    <div class="font-medium">${step.description}</div>
+                                    <div class="text-xs text-slate-400 mt-1 flex items-center gap-x-3">
+                                        <span><i class="fa-solid fa-clock mr-1"></i>~${step.estimated_time_min} min</span>
+                                        ${step.required_tools?.length ? `<span>Tools: ${step.required_tools.join(', ')}</span>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += `</div>`;
+            }
+            
+            // Safety warnings
+            if (data.safety_warnings && data.safety_warnings.length > 0) {
+                html += `<div class="text-xs px-3 py-2 bg-amber-900/30 border border-amber-800 text-amber-300 rounded-2xl">
+                    <i class="fa-solid fa-exclamation-triangle mr-1.5"></i>
+                    <strong>Safety:</strong> ${data.safety_warnings.join(" • ")}
+                </div>`;
+            }
+            
+            // Citations
+            if (data.citations && data.citations.length) {
+                html += `<div class="text-[10px] text-slate-400">Sources: ${data.citations.join(" • ")}</div>`;
+            }
+            
+            html += `</div>`;
+            panel.innerHTML = html;
+            
+            // Confidence
+            if (data.confidence !== undefined) {
+                badge.classList.remove("hidden");
+                badge.classList.add("flex");
+                document.getElementById("confidence-value").textContent = (data.confidence * 100).toFixed(0) + "%";
+                
+                if (data.confidence < 0.6) {
+                    badge.classList.add("!border-red-700", "!bg-red-900/30");
+                }
+            }
+            
+            // Show actions
+            actions.classList.remove("hidden");
+            
+            // Add to chat
+            addMessage(data.immediate_response || "Guidance generated.", false, 
+                data.confidence ? `Confidence ${Math.round(data.confidence * 100)}%` : "");
+            
+            // Auto speak if user hasn't interacted recently
+            if (data.voice_text) {
+                lastAssistantResponse = data.voice_text;
+                // Uncomment if you want automatic TTS:
+                // setTimeout(() => speakLastResponse(), 600);
+            }
+        }
+
+        function confirmNextStep() {
+            const input = document.getElementById("text-input");
+            input.value = "Next step please";
+            sendTextMessage();
+        }
+
+        function askForMoreInfo() {
+            const input = document.getElementById("text-input");
+            input.value = "Can you explain this more or show a diagram?";
+            sendTextMessage();
+        }
+
+        // ==================== UTILITIES ====================
+        function showSessionInfo() {
+            const info = `Current Session: ${currentSessionId}\n\nThis is a fully functional prototype of the Multi-Modal Field Service Assistant.\n\nBackend must be running for real agentic responses.`;
+            alert(info);
+        }
+
+        function resetSession() {
+            if (confirm("Reset current session?")) {
+                currentSessionId = "demo-" + Math.floor(Math.random() * 10000);
+                document.getElementById("session-id-display").textContent = currentSessionId;
+                document.getElementById("current-session").textContent = currentSessionId;
+                
+                clearChat();
+                document.getElementById("guidance-panel").innerHTML = `
+                    <div class="text-center py-8 text-slate-400 text-sm">
+                        <i class="fa-solid fa-lightbulb text-2xl mb-3 block text-slate-500"></i>
+                        <p>Session reset. Capture a photo or speak to begin.</p>
+                    </div>
+                `;
+                document.getElementById("agent-actions").classList.add("hidden");
+                document.getElementById("confidence-badge").classList.add("hidden");
+                clearCapturedImage();
+                currentPlan = null;
+                capturedImageBase64 = null;
+            }
+        }
+
+        async function runDemoScenario() {
+            const panel = document.getElementById("guidance-panel");
+            panel.innerHTML = `<div class="text-center py-6"><i class="fa-solid fa-sync fa-spin text-emerald-400"></i><div class="mt-2 text-sm">Loading realistic demo scenario...</div></div>`;
+            
+            // Simulate realistic user input + image
+            setTimeout(() => {
+                addMessage("This pump is making a grinding noise and the housing feels hot. There's also fluid leaking from the bottom.", true);
+                
+                // Fake a captured image
+                capturedImageBase64 = "demo-image"; // Will be ignored by backend in mock mode
+                
+                processUserInput("This pump is making a grinding noise and the housing feels hot. There's also fluid leaking from the bottom.");
+            }, 650);
+        }
+
+        // ==================== INIT ====================
+        function initApp() {
+            initTailwind();
+            
+            // Welcome message
+            setTimeout(() => {
+                const chat = document.getElementById("chat-messages");
+                if (chat.children.length === 0) {
+                    addMessage("Hello Alex. I'm ready to assist. Point your camera at the equipment or describe the issue.", false, "System ready");
+                }
+            }, 800);
+            
+            // Keyboard hint
+            console.log("%c[MM-FSA] Frontend initialized. Backend expected at " + API_BASE, "color:#64748b");
+            
+            // Make demo easy to trigger
+            window.runDemo = runDemoScenario;
+            
+            // Optional: auto-run demo after a delay in some environments
+            // setTimeout(() => { if (confirm("Would you like to run the demo scenario?")) runDemoScenario(); }, 12000);
+        }
+
+        window.onload = initApp;
+    </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+# Core
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-multipart>=0.0.12
+
+# Agentic Framework
+langchain>=0.3.0
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# RAG & Vector
+llama-index>=0.11.0
+chromadb>=0.5.0
+llama-index-vector-stores-chroma>=0.2.0
+
+# Models & Inference (Ollama primary)
+ollama>=0.3.0
+langchain-ollama>=0.2.0
+
+# Vision & Image
+Pillow>=10.4.0
+opencv-python-headless>=4.10.0
+
+# Speech
+faster-whisper>=1.0.0
+piper-tts>=1.2.0   # or use system; optional for server TTS
+
+# Utilities
+redis>=5.0.0
+psycopg2-binary>=2.9.0   # for future Postgres
+python-dotenv>=1.0.0
+structlog>=24.4.0
+tenacity>=9.0.0
+
+# Evaluation & Observability (optional but recommended)
+ragas>=0.1.0
+langfuse>=2.0.0   # or opentelemetry
+
+# Dev / Testing
+pytest>=8.3.0
+httpx>=0.27.0
+pytest-asyncio>=0.24.0
+
+# Optional production
+vllm>=0.6.0 ; platform_system != "Windows"   # heavy
+# For cloud fallback
+# openai>=1.50.0
+# anthropic>=0.39.0
