@@ -6,6 +6,8 @@ Handles:
 - Past case histories
 - Automatic description of diagrams/images using VLM
 - Hybrid vector + metadata storage in ChromaDB
+
+Uses local Ollama embeddings by default (nomic-embed-text or similar) to avoid any OpenAI dependency.
 """
 import os
 import json
@@ -13,11 +15,12 @@ from pathlib import Path
 from typing import Dict, Any, List
 import structlog
 
+from ai_core.rag.embeddings import ensure_local_embeddings
+
 logger = structlog.get_logger(__name__)
 
 MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma_db")
-VLM_MODEL = os.getenv("VLM_MODEL", "llama3.2-vision:11b")
 
 def ingest_knowledge_base(
     manuals_dir: str,
@@ -42,6 +45,9 @@ def ingest_knowledge_base(
         from llama_index.core import Document, VectorStoreIndex, StorageContext
         from llama_index.vector_stores.chroma import ChromaVectorStore
         from llama_index.core.node_parser import SentenceSplitter
+
+        # === CRITICAL: Force local Ollama embeddings (this prevents the OpenAI default error) ===
+        embed_model = ensure_local_embeddings()
 
         client = chromadb.PersistentClient(path=persist_dir)
         collection = client.get_or_create_collection(
@@ -107,7 +113,8 @@ Outcome: {case['outcome']}"""
             index = VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
-                transformations=[splitter]
+                transformations=[splitter],
+                # embed_model is already globally configured via ensure_local_embeddings()
             )
             logger.info(f"Built vector index with {len(documents)} documents")
         

@@ -21,6 +21,7 @@ import structlog
 sys.path.append(str(Path(__file__).parent.parent))
 
 from ai_core.rag.index_manager import ingest_knowledge_base
+from ai_core.rag.embeddings import ensure_local_embeddings  # ensures we never use OpenAI embeddings
 
 logger = structlog.get_logger(__name__)
 
@@ -43,6 +44,14 @@ def main():
     print(f"\nIngesting from: {KNOWLEDGE_BASE_DIR}")
     print(f"Cases file: {CASES_FILE}")
     print(f"Vector store: {CHROMA_DIR}")
+    
+    # Ensure local embeddings are configured before any LlamaIndex usage
+    if not os.getenv("MOCK_MODE", "false").lower() == "true":
+        try:
+            ensure_local_embeddings()
+        except Exception as e:
+            print(f"\n⚠️  Embedding setup warning: {e}")
+            print("   You can still proceed with MOCK_MODE=true, or fix your Ollama setup.")
     
     stats = ingest_knowledge_base(
         manuals_dir=KNOWLEDGE_BASE_DIR,

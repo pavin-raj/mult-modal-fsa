@@ -2,6 +2,9 @@
 RAG Tool for the Field Service Agent.
 Performs hybrid retrieval over technical manuals, SOPs, and past cases.
 Uses LlamaIndex + ChromaDB.
+
+IMPORTANT: Uses the centralized local Ollama embedding configuration
+to avoid any accidental OpenAI embedding fallback.
 """
 import os
 import time
@@ -9,6 +12,8 @@ from typing import List, Optional
 from langchain_core.tools import tool
 from ai_core.models.schemas import RetrievedDocument
 import structlog
+
+from ai_core.rag.embeddings import ensure_local_embeddings
 
 logger = structlog.get_logger(__name__)
 
@@ -20,7 +25,7 @@ _vector_store = None
 _retriever = None
 
 def get_retriever():
-    """Lazy initialization of LlamaIndex retriever."""
+    """Lazy initialization of LlamaIndex retriever (with local embeddings enforced)."""
     global _vector_store, _retriever
     if _retriever is not None:
         return _retriever
@@ -30,17 +35,26 @@ def get_retriever():
         return _retriever
 
     try:
-        from llama_index.core import VectorStoreIndex, StorageContext
+        from llama_index.core import VectorStoreIndex, StorageContext, Settings
         from llama_index.vector_stores.chroma import ChromaVectorStore
         import chromadb
+
+        # === CRITICAL: Ensure we are using local Ollama embeddings, not OpenAI ===
+        embed_model = ensure_local_embeddings()
 
         client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
         vector_store = ChromaVectorStore(chroma_collection=client.get_or_create_collection("fsa_knowledge"))
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        index = VectorStoreIndex.from_vector_store(vector_store, storage_context=storage_context)
+        
+        # Explicitly pass the embed model when reconstructing the index
+        index = VectorStoreIndex.from_vector_store(
+            vector_store, 
+            storage_context=storage_context,
+            embed_model=embed_model
+        )
         
         _retriever = index.as_retriever(similarity_top_k=8)
-        logger.info("RAG retriever initialized from Chroma")
+        logger.info("RAG retriever initialized from Chroma (local embeddings)")
         return _retriever
     except Exception as e:
         logger.error("Failed to initialize real RAG retriever", error=str(e))

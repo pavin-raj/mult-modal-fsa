@@ -15,10 +15,10 @@
 # Install Ollama: https://ollama.com/download
 ollama serve &
 
-# Pull recommended models
-ollama pull llama3.2:3b
-ollama pull llama3.2-vision:11b
-ollama pull nomic-embed-text
+# Pull recommended models (this is critical for RAG to work without OpenAI keys)
+ollama pull llama3.2:3b          # main reasoning model
+ollama pull llama3.2-vision:11b  # vision / VLM
+ollama pull nomic-embed-text     # <--- REQUIRED for embeddings (prevents OpenAI default error)
 ```
 
 ### 2. Set up Python environment
@@ -37,6 +37,8 @@ python scripts/ingest_data.py
 ```
 
 This populates ChromaDB with sample manuals + historical cases.
+
+**Important**: If you see an error about OpenAI API key, make sure you have pulled `nomic-embed-text` and Ollama is running. The system now strictly uses local embeddings.
 
 ### 4. Start the Backend
 

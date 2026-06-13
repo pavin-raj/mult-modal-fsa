@@ -14,6 +14,8 @@ langchain-core>=0.3.0
 llama-index>=0.11.0
 chromadb>=0.5.0
 llama-index-vector-stores-chroma>=0.2.0
+llama-index-embeddings-ollama>=0.3.0   # primary local embeddings (Ollama)
+llama-index-embeddings-openai>=0.2.0   # harmless stub - we override immediately with local model (fixes LlamaIndex default resolver)
 
 # Models & Inference (Ollama primary)
 ollama>=0.3.0

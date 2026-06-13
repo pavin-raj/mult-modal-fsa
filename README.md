@@ -165,7 +165,7 @@ pip install -r requirements.txt
 ollama serve &
 ollama pull llama3.2:3b          # or larger
 ollama pull llama3.2-vision:11b  # VLM
-ollama pull nomic-embed-text     # embeddings
+ollama pull nomic-embed-text     # embeddings  <--- REQUIRED to avoid OpenAI embedding errors
 ```
 
 ### 3. Ingest Knowledge Base
