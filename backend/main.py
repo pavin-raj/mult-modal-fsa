@@ -27,6 +27,8 @@ from ai_core.agents.field_agent import run_agent_turn, get_field_agent
 from ai_core.speech.stt import transcribe_audio
 from ai_core.speech.tts import synthesize_speech
 
+from backend.routers.upload import router as upload_router
+
 logger = structlog.get_logger(__name__)
 
 app = FastAPI(
@@ -34,6 +36,8 @@ app = FastAPI(
     version="1.0.0",
     description="Agentic, vision + voice + RAG powered assistant for field technicians"
 )
+
+app.include_router(upload_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,28 +93,31 @@ async def get_guidance(req: GuidanceRequest):
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error"))
     
-    resp = result["response"]
+    resp = result["response"] or {}
     
     # Update lightweight session
     sessions[session_id] = {
         "last_updated": time.time(),
-        "equipment": resp.get("vision", {}).get("equipment_model"),
+        "equipment": (resp.get("vision") or {}).get("equipment_model") if resp else None,
         "last_confidence": resp.get("confidence"),
         "last_plan_summary": resp.get("plan", {}).get("diagnosis") if resp.get("plan") else None
     }
+
+    vision = resp.get("vision") if isinstance(resp, dict) else None
+    equipment_model = vision.get("equipment_model") if isinstance(vision, dict) else None
     
     return GuidanceResponse(
-        session_id=session_id,
-        plan=resp.get("plan"),
-        immediate_response=resp.get("immediate", ""),
-        voice_text=resp.get("voice", ""),
-        citations=resp.get("plan", {}).get("citations", []) if resp.get("plan") else [],
-        confidence=resp.get("confidence", 0.5),
-        needs_clarification=resp.get("needs_more_info", False),
-        safety_warnings=resp.get("plan", {}).get("warnings", []) if resp.get("plan") else [],
-        trace_id=resp.get("trace_id", ""),
-        next_actions=["Say 'next step'", "Upload new photo", "Ask for clarification"]
-    )
+    session_id=session_id,
+    plan=resp.get("plan"),
+    immediate_response=resp.get("immediate", ""),
+    voice_text=resp.get("voice", ""),
+    citations=resp.get("plan", {}).get("citations", []) if resp.get("plan") else [],
+    confidence=resp.get("confidence", 0.5),
+    needs_clarification=resp.get("needs_more_info", False),
+    safety_warnings=resp.get("plan", {}).get("warnings", []) if resp.get("plan") else [],
+    trace_id=resp.get("trace_id", ""),
+    next_actions=["Say 'next step'", "Upload new photo", "Ask for clarification"]
+)
 
 @app.post("/voice-query")
 async def voice_query(req: dict):
