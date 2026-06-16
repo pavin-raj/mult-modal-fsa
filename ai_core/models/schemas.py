@@ -1,6 +1,7 @@
 """
 Pydantic models and TypedDicts for the Multi-Modal Field Service Assistant.
 Strong typing + Intent Classification for production-grade routing.
+SaaS multi-tenant extensions for industry-specific deployments.
 """
 from __future__ import annotations
 from typing import TypedDict, List, Optional, Literal, Dict, Any
@@ -19,6 +20,41 @@ class QueryIntent(str, Enum):
     SAFETY_QUESTION = "safety_question"           # Is it safe to...? Risk assessment
     PARTS_LOOKUP = "parts_lookup"                 # What is the part number for...?
     UNKNOWN = "unknown"                           # Ambiguous or out of scope
+
+class Industry(str, Enum):
+    """Generic industry taxonomy for SaaS vertical rollouts. Easy to extend."""
+    CONSTRUCTION = "construction"
+    WATER_TREATMENT = "water_treatment"
+    OIL_GAS = "oil_gas"
+    MANUFACTURING = "manufacturing"
+    ENERGY = "energy"
+    GENERAL_INDUSTRIAL = "general_industrial"
+    UNKNOWN = "unknown"
+
+# =============================================================================
+# SaaS / Multi-Tenant Models (Director + Tenant Context)
+# =============================================================================
+class TenantContext(BaseModel):
+    """Lightweight tenant context (prototype fake auth → real JWT claims later)."""
+    tenant_id: str = Field(..., description="Unique customer/organization identifier")
+    industry: Industry = Field(..., description="The primary industry this tenant is licensed for")
+    licensed_industries: List[Industry] = Field(default_factory=list, description="All industries this tenant may access")
+    company_name: Optional[str] = None
+    features: List[str] = Field(default_factory=list, description="Enabled features for this tenant")
+    is_active: bool = True
+
+    @property
+    def primary_industry(self) -> Industry:
+        return self.industry
+
+class DirectorClassification(BaseModel):
+    """Structured output from the multi-agent Director (industry router)."""
+    primary_industry: Industry = Field(..., description="Best matching industry for this query")
+    query_intent: QueryIntent = Field(..., description="The query intent")
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    reasoning: str = Field(..., description="Why this industry + intent was chosen")
+    is_cross_industry: bool = Field(default=False, description="True if the query is outside the tenant's licensed industry")
+    suggested_tools: List[str] = Field(default_factory=list)
 
 class Modality(str, Enum):
     TEXT = "text"
@@ -109,7 +145,6 @@ class SafetyAssessment(BaseModel):
     mitigation_steps: List[str] = Field(default_factory=list)
     confidence: float
 
-# NEW: Structured output for the Intent Classifier (production best practice)
 class IntentClassification(BaseModel):
     intent: QueryIntent = Field(..., description="The primary intent of the user's query")
     confidence: float = Field(..., ge=0.0, le=1.0, description="How confident the classifier is")
@@ -140,10 +175,17 @@ class AgentState(TypedDict):
     voice_response: Optional[str]
     trace_id: str
     
-    # NEW - Intent Classification (Production)
+    # Intent Classification (Production)
     query_intent: Optional[QueryIntent]
     intent_confidence: Optional[float]
     intent_reasoning: Optional[str]
+
+    # SaaS / Multi-Tenant Fields (Director + Tenant Context)
+    tenant_context: Optional[TenantContext]
+    query_industry: Optional[Industry]
+    was_cross_industry: Optional[bool]
+    director_reasoning: Optional[str]
+    disclaimer: Optional[str]
 
 # =============================================================================
 # API Request / Response Models
@@ -164,6 +206,10 @@ class GuidanceRequest(BaseModel):
     equipment_id: Optional[str] = None
     force_full_agent: bool = False
 
+    # SaaS Prototype Fields (fake tenant context - will become JWT claims)
+    tenant_id: Optional[str] = Field(default="demo-tenant-001", description="Customer/organization ID")
+    industry: Optional[Industry] = Field(default=Industry.CONSTRUCTION, description="Tenant's primary licensed industry")
+
 class GuidanceResponse(BaseModel):
     session_id: str
     plan: Optional[GuidancePlan] = None
@@ -176,9 +222,16 @@ class GuidanceResponse(BaseModel):
     trace_id: str
     next_actions: List[str] = Field(default_factory=list)
     
-    # NEW - For general knowledge queries
+    # Intent + SaaS routing info
     query_intent: Optional[QueryIntent] = None
-    is_troubleshooting: bool = True   # False for pure knowledge questions
+    is_troubleshooting: bool = True
+    
+    # SaaS fields
+    query_industry: Optional[Industry] = None
+    was_cross_industry: bool = False
+    disclaimer: Optional[str] = None
+    tenant_id: Optional[str] = None
+    director_reasoning: Optional[str] = None
 
 # =============================================================================
 # Tool Output Schemas

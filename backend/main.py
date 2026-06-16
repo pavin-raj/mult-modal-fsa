@@ -25,11 +25,40 @@ from ai_core.models.schemas import (
     AnalyzeImageRequest, AnalyzeImageResponse,
     GuidanceRequest, GuidanceResponse,
     SessionStateResponse,
-    QueryIntent
+    QueryIntent,
+    Industry,
+    TenantContext
 )
 from ai_core.agents.field_agent import run_agent_turn, get_field_agent
 from ai_core.speech.stt import transcribe_audio
 from ai_core.speech.tts import synthesize_speech
+
+
+def _get_tenant_context_from_request(req) -> TenantContext:
+    """
+    Prototype fake auth extractor.
+    In production this will come from JWT claims (tenant_id, industry, licensed_industries, features).
+    
+    For now we accept either:
+    - GuidanceRequest.tenant_id + .industry (preferred for the new SaaS flow)
+    - Or fall back to headers X-Tenant-ID / X-Industry
+    """
+    tenant_id = getattr(req, "tenant_id", None) or "demo-tenant-001"
+    industry_str = getattr(req, "industry", None)
+    
+    # Support string industry or enum
+    try:
+        industry = Industry(industry_str) if industry_str else Industry.CONSTRUCTION
+    except ValueError:
+        industry = Industry.CONSTRUCTION
+    
+    return TenantContext(
+        tenant_id=str(tenant_id),
+        industry=industry,
+        licensed_industries=[industry],
+        company_name=f"Demo {industry.value.title()} Company",
+        features=["rag", "vision", "basic_safety"]
+    )
 
 logger = structlog.get_logger(__name__)
 
@@ -78,17 +107,25 @@ async def analyze_image_endpoint(req: AnalyzeImageRequest):
 @app.post("/get-guidance", response_model=GuidanceResponse)
 async def get_guidance(req: GuidanceRequest):
     """
-    Main entry point for full agentic reasoning.
-    Accepts text + optional image. Runs the complete LangGraph workflow
-    (including early Intent Classification + branched planner for troubleshooting vs general).
+    Main entry point for full agentic reasoning (SaaS multi-tenant version).
+    Accepts text + optional image + tenant context (fake headers/body for prototype).
+    
+    Runs the complete LangGraph workflow:
+    - Director (industry router + cross-industry detection) FIRST
+    - Then Intent Classification + branched planner
+    - RAG is tenant + industry aware (hybrid model)
     """
     session_id = req.session_id or str(uuid.uuid4())
+    
+    # Extract tenant context (prototype fake auth)
+    tenant_ctx = _get_tenant_context_from_request(req)
     
     result = await run_agent_turn(
         session_id=session_id,
         user_input=req.transcript,
         image_b64=req.image_b64,
-        technician_id="tech-demo"
+        technician_id="tech-demo",
+        tenant_context=tenant_ctx   # <-- SaaS context passed into the graph
     )
     
     if not result["success"]:
@@ -96,12 +133,14 @@ async def get_guidance(req: GuidanceRequest):
     
     resp = result["response"] or {}
     
-    # Update lightweight session
+    # Update lightweight session (now with tenant)
     sessions[session_id] = {
         "last_updated": time.time(),
         "equipment": (resp.get("vision") or {}).get("equipment_model") if resp else None,
         "last_confidence": resp.get("confidence"),
-        "last_plan_summary": resp.get("plan", {}).get("diagnosis") if resp.get("plan") else None
+        "last_plan_summary": resp.get("plan", {}).get("diagnosis") if resp.get("plan") else None,
+        "tenant_id": tenant_ctx.tenant_id,
+        "industry": tenant_ctx.industry.value
     }
     
     # Determine if this was a troubleshooting path (for frontend rendering)
@@ -119,9 +158,14 @@ async def get_guidance(req: GuidanceRequest):
         safety_warnings=resp.get("plan", {}).get("warnings", []) if resp.get("plan") else [],
         trace_id=resp.get("trace_id", ""),
         next_actions=["Say 'next step'", "Upload new photo", "Ask for clarification"],
-        # NEW: expose intent so frontend can render explanation vs repair-plan differently
+        # Intent + SaaS fields
         query_intent=intent_value,
-        is_troubleshooting=is_troubleshooting
+        is_troubleshooting=is_troubleshooting,
+        query_industry=resp.get("query_industry"),
+        was_cross_industry=resp.get("was_cross_industry", False),
+        disclaimer=resp.get("disclaimer"),
+        tenant_id=tenant_ctx.tenant_id,
+        director_reasoning=resp.get("director_reasoning")
     )
 
 @app.post("/voice-query")

@@ -29,11 +29,12 @@
                     </div>
                 </div>
                 
+                <!-- Backend URL -->
                 <div class="flex items-center gap-x-2 bg-slate-800 rounded-2xl px-3 py-1.5 text-sm border border-slate-700">
                     <i class="fa-solid fa-server text-emerald-400"></i>
-                    <input id="backend-url" type="text" value="https://YOUR-NGROK-URL.ngrok.io" 
+                    <input id="backend-url" type="text" value="https://emcee-ashes-carwash.ngrok-free.dev" 
                            class="bg-transparent w-[420px] font-mono text-sm focus:outline-none text-emerald-300"
-                           placeholder="https://7f3a-34-123-45-67.ngrok.io">
+                           placeholder="https://...ngrok-free.dev">
                     <button onclick="saveBackendUrl()" class="px-4 py-1 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-xl font-medium">Save</button>
                     <button onclick="testConnection()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded-xl border border-slate-600">Test</button>
                 </div>
@@ -45,6 +46,28 @@
         <div class="mb-6">
             <h1 class="font-display text-4xl font-semibold tracking-tighter">Multi-Modal Field Service Assistant</h1>
             <p class="text-slate-400 mt-1">Backend: <span id="current-backend" class="font-mono text-emerald-300 break-all"></span></p>
+        </div>
+
+        <!-- SaaS Tenant Context (FAKE AUTH for Director testing) -->
+        <div class="bg-slate-900 border border-amber-700 rounded-3xl p-4 tech-card mb-6">
+            <div class="flex items-center gap-x-2 mb-2 text-amber-400 text-xs font-semibold">
+                <i class="fa-solid fa-building"></i>
+                <span>SAAS PROTOTYPE TENANT (fake - sent to Director)</span>
+            </div>
+            <div class="flex gap-3 items-center">
+                <input id="tenant-id" type="text" value="constr-42" 
+                       class="bg-slate-800 border border-slate-600 rounded-xl px-3 py-1 text-sm font-mono w-32 focus:outline-none text-amber-300">
+                <select id="tenant-industry" class="bg-slate-800 border border-slate-600 rounded-xl px-3 py-1 text-sm text-amber-300">
+                    <option value="construction">Construction</option>
+                    <option value="water_treatment">Water Treatment</option>
+                    <option value="oil_gas">Oil & Gas</option>
+                    <option value="manufacturing">Manufacturing</option>
+                    <option value="general_industrial">General Industrial</option>
+                </select>
+                <button onclick="saveTenantContext()" class="px-4 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-xl font-medium">Apply Tenant</button>
+                <span id="tenant-status" class="text-[10px] text-amber-400"></span>
+            </div>
+            <div class="text-[10px] text-slate-500 mt-1">This is passed as tenant_id + industry to the backend Director (industry router). Switch tenants and ask cross-industry questions to see disclaimers.</div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -77,23 +100,6 @@
                         </label>
                     </div>
                 </div>
-
-                <!-- Upload Document Section -->
-<div class="bg-slate-900 border border-slate-700 rounded-3xl p-5 mt-6">
-    <div class="flex items-center gap-x-2 mb-3">
-        <i class="fa-solid fa-file-upload text-blue-400"></i>
-        <span class="font-semibold">Upload New Manual / PDF</span>
-    </div>
-    <div class="flex gap-3 items-center">
-        <input type="file" id="doc-upload" accept=".pdf,.md,.txt" class="hidden" onchange="uploadDocument()">
-        <button onclick="document.getElementById('doc-upload').click()" 
-                class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-2xl text-sm font-medium">
-            Choose PDF / MD / TXT
-        </button>
-        <span id="upload-status" class="text-xs text-slate-400"></span>
-    </div>
-    <div class="text-[10px] text-slate-500 mt-2">Documents are added live to the AI’s knowledge base.</div>
-</div>
 
                 <div class="bg-slate-900 border border-slate-700 rounded-3xl p-5 tech-card">
                     <div class="flex items-center gap-x-2 mb-3">
@@ -146,18 +152,26 @@
         </div>
     </div>
 
-    
-
     <script>
         let currentSessionId = "remote-" + Date.now();
         let capturedImageBase64 = null;
         let lastAssistantResponse = "";
-        let API_BASE = localStorage.getItem('mmfsa_backend') || "https://YOUR-NGROK-URL.ngrok.io";
+
+        let API_BASE = localStorage.getItem('mmfsa_backend') || "https://emcee-ashes-carwash.ngrok-free.dev";
 
         function updateUI() {
             document.getElementById("backend-url").value = API_BASE;
             document.getElementById("current-backend").textContent = API_BASE;
             document.getElementById("current-session").textContent = currentSessionId;
+            
+            // Restore tenant context
+            const savedTenant = localStorage.getItem('mmfsa_tenant_id') || "constr-42";
+            const savedIndustry = localStorage.getItem('mmfsa_industry') || "construction";
+            const tidEl = document.getElementById("tenant-id");
+            const indEl = document.getElementById("tenant-industry");
+            if (tidEl) tidEl.value = savedTenant;
+            if (indEl) indEl.value = savedIndustry;
+            updateTenantStatus();
         }
 
         function saveBackendUrl() {
@@ -167,6 +181,31 @@
                 localStorage.setItem('mmfsa_backend', API_BASE);
                 updateUI();
             }
+        }
+
+        function saveTenantContext() {
+            const tid = document.getElementById("tenant-id").value.trim() || "demo-tenant-001";
+            const ind = document.getElementById("tenant-industry").value;
+            localStorage.setItem('mmfsa_tenant_id', tid);
+            localStorage.setItem('mmfsa_industry', ind);
+            updateTenantStatus();
+            alert(`Tenant context applied: ${tid} / ${ind}`);
+        }
+
+        function updateTenantStatus() {
+            const status = document.getElementById("tenant-status");
+            if (status) {
+                const tid = localStorage.getItem('mmfsa_tenant_id') || "constr-42";
+                const ind = localStorage.getItem('mmfsa_industry') || "construction";
+                status.textContent = `Active: ${tid} (${ind})`;
+            }
+        }
+
+        function getTenantContext() {
+            return {
+                tenant_id: localStorage.getItem('mmfsa_tenant_id') || "constr-42",
+                industry: localStorage.getItem('mmfsa_industry') || "construction"
+            };
         }
 
         async function testConnection() {
@@ -179,12 +218,14 @@
                     alert("Connection failed. Status: " + res.status);
                 }
             } catch (err) {
-                alert("❌ Cannot reach " + API_BASE + "\n\n" + err.message + "\n\nMake sure ngrok is running on the cloud.");
+                alert("❌ Cannot reach " + API_BASE + "\n\n" + err.message + 
+                      "\n\nMake sure ngrok is running on the cloud and the URL is correct.");
             }
         }
 
         updateUI();
 
+        // Camera
         let stream = null;
         async function startCamera() {
             try {
@@ -230,8 +271,9 @@
             document.getElementById("camera-placeholder").classList.remove("hidden");
         }
 
+        // Voice
         function startVoiceInput() {
-            if (!('webkitSpeechRecognition' in window)) return alert("Voice not supported.");
+            if (!('webkitSpeechRecognition' in window)) return alert("Voice not supported in this browser.");
             const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
             recognition.onresult = (e) => {
                 const text = e.results[0][0].transcript;
@@ -247,6 +289,7 @@
             }
         }
 
+        // Chat + Agent
         function addMessage(content, isUser = false, extra = "") {
             const container = document.getElementById("chat-messages");
             const div = document.createElement("div");
@@ -267,32 +310,70 @@
             actions.classList.add("hidden");
 
             try {
-                const payload = { session_id: currentSessionId, transcript: userText, image_b64: capturedImageBase64 || null };
+                const tc = getTenantContext();   // <-- this was the "tc is not defined" problem
+                const payload = { 
+                    session_id: currentSessionId, 
+                    transcript: userText, 
+                    image_b64: capturedImageBase64 || null,
+                    tenant_id: tc.tenant_id,
+                    industry: tc.industry
+                };
+                
                 const res = await fetch(`${API_BASE}/get-guidance`, {
-                    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+                    method: "POST", 
+                    headers: { "Content-Type": "application/json" }, 
+                    body: JSON.stringify(payload)
                 });
+                
                 if (!res.ok) throw new Error("HTTP " + res.status);
                 const data = await res.json();
                 displayAgentResponse(data);
                 lastAssistantResponse = data.voice_text || data.immediate_response || "";
             } catch (e) {
                 panel.innerHTML = `<div class="p-4 bg-red-900/30 border border-red-700 rounded-2xl text-sm">Cannot reach backend<br><span class="font-mono text-xs">${API_BASE}</span><br><span class="text-red-400">${e.message}</span></div>`;
+                console.error("Fetch error:", e);
             }
         }
 
         function displayAgentResponse(data) {
             const panel = document.getElementById("guidance-panel");
             let html = `<div class="space-y-3">`;
-            if (data.immediate_response) html += `<div><span class="text-xs text-emerald-400">DIAGNOSIS</span><div class="font-medium">${data.immediate_response}</div></div>`;
-            if (data.plan && data.plan.steps) {
-                html += `<div><span class="text-xs text-emerald-400">STEPS</span>`;
+            
+            // SaaS Director info
+            const ind = data.query_industry || "unknown";
+            const cross = data.was_cross_industry;
+            html += `<div class="text-[10px] mb-1 flex gap-2 flex-wrap">
+                <span class="px-2 py-0.5 rounded bg-slate-800">Industry: ${ind}</span>
+                ${cross ? '<span class="px-2 py-0.5 rounded bg-red-900/60 text-red-300">CROSS-INDUSTRY</span>' : ''}
+                ${data.query_intent ? `<span class="px-2 py-0.5 rounded bg-slate-700">${data.query_intent}</span>` : ''}
+            </div>`;
+            
+            if (data.immediate_response) {
+                const label = (data.is_troubleshooting === false) ? "ANSWER" : "DIAGNOSIS";
+                html += `<div><span class="text-xs text-emerald-400">${label}</span><div class="font-medium">${data.immediate_response}</div></div>`;
+            }
+            
+            const isTrouble = data.is_troubleshooting !== false && !cross;
+            if (isTrouble && data.plan && data.plan.steps && data.plan.steps.length > 0) {
+                html += `<div><span class="text-xs text-emerald-400">REPAIR STEPS</span>`;
                 data.plan.steps.forEach(s => html += `<div class="text-sm bg-slate-800 p-2 rounded-xl mb-1">${s.step_number}. ${s.description}</div>`);
                 html += `</div>`;
+            } else if (data.plan && data.plan.citations && data.plan.citations.length) {
+                html += `<div class="text-xs text-slate-400">Sources: ${data.plan.citations.slice(0,3).join(", ")}</div>`;
             }
-            if (data.safety_warnings && data.safety_warnings.length) html += `<div class="text-xs text-amber-300">⚠️ ${data.safety_warnings.join(" • ")}</div>`;
+            
+            if (data.safety_warnings && data.safety_warnings.length) {
+                html += `<div class="text-xs text-amber-300">⚠️ ${data.safety_warnings.join(" • ")}</div>`;
+            }
+            
+            if (data.disclaimer) {
+                html += `<div class="text-[10px] p-2 bg-amber-900/30 border border-amber-700 rounded-xl mt-2">${data.disclaimer}</div>`;
+            }
+            
             html += `</div>`;
             panel.innerHTML = html;
             document.getElementById("agent-actions").classList.remove("hidden");
+            
             if (data.confidence) {
                 document.getElementById("confidence-badge").classList.remove("hidden");
                 document.getElementById("confidence-badge").classList.add("flex");
@@ -309,46 +390,24 @@
             input.value = "";
         }
 
-        async function uploadDocument() {
-    const input = document.getElementById('doc-upload');
-    const status = document.getElementById('upload-status');
-    const file = input.files[0];
-    if (!file) return;
-
-    status.textContent = "Uploading...";
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-        const res = await fetch(`${API_BASE}/upload/document`, {
-            method: "POST",
-            body: formData
-        });
-        const data = await res.json();
-
-        if (res.ok) {
-            status.textContent = "✅ Added to knowledge base!";
-            setTimeout(() => status.textContent = "", 3000);
-        } else {
-            status.textContent = "❌ " + (data.detail || "Upload failed");
-        }
-    } catch (e) {
-        status.textContent = "❌ Upload error";
-    }
-    input.value = "";
-}
-
         function confirmNextStep() { processUserInput("Next step please"); }
         function askForMoreInfo() { processUserInput("Please explain more or show a diagram"); }
+
+        function runDemoScenario() {
+            addMessage("This pump is vibrating badly and leaking from the bottom seal.", true);
+            capturedImageBase64 = "demo";
+            processUserInput("This pump is vibrating badly and leaking from the bottom seal.");
+        }
 
         function resetSession() { location.reload(); }
 
         setTimeout(() => {
             if (document.getElementById("chat-messages").children.length === 0) {
-                addMessage("Paste your ngrok URL at the top, click Save, then Test. Then use camera + voice.", false, "Ready");
+                addMessage("Paste your ngrok URL at the top, click Save, then Test. Then use camera + voice or the demo button. Use the amber 'Tenant' box to test cross-industry routing.", false, "Ready");
             }
         }, 800);
+
+        window.setMMFSABackend = (u) => { API_BASE = u; localStorage.setItem('mmfsa_backend', u); updateUI(); };
     </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a0cca22dfa86b2be',t:'MTc4MTY0MjQ2Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

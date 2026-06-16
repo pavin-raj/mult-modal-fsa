@@ -7,7 +7,7 @@ This is the "brain" that orchestrates vision, RAG, safety, and planning.
 import os
 import uuid
 import time
-from typing import Literal
+from typing import Literal, Optional
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,12 +20,16 @@ from ai_core.models.schemas import (
     RepairStep, 
     SafetyAssessment,
     QueryIntent,
-    IntentClassification
+    IntentClassification,
+    Industry,
+    TenantContext,
+    DirectorClassification
 )
 from ai_core.agents.tools.vision_tool import analyze_image
 from ai_core.agents.tools.rag_tool import retrieve_knowledge
 from ai_core.agents.tools.safety_tool import assess_safety
 from ai_core.agents.intent_classifier import classify_intent
+from ai_core.agents.director import classify_with_director, build_disclaimer
 
 import structlog
 
@@ -66,6 +70,68 @@ def input_fusion(state: AgentState) -> AgentState:
     if not state.get("trace_id"):
         state["trace_id"] = str(uuid.uuid4())
     state["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return state
+
+
+def director_node(state: AgentState) -> AgentState:
+    """
+    Multi-agent Director (the router for industry-specific SaaS).
+    
+    Runs very early (right after input_fusion).
+    Classifies primary industry + intent, detects cross-industry queries,
+    and injects tenant context + disclaimer into the state for all downstream nodes.
+    
+    This is the heart of the "Director + industry-aware sub-agents" pattern.
+    """
+    logger.info("Node: director (multi-agent router)")
+    
+    user_input = state.get("latest_user_input", "")
+    has_image = bool(state.get("current_image_b64"))
+    
+    # Extract tenant context (prototype uses what's passed in; later from JWT)
+    tenant_ctx = state.get("tenant_context")
+    if tenant_ctx is None:
+        # Prototype fallback - treat as construction demo tenant
+        tenant_ctx = TenantContext(
+            tenant_id="demo-tenant-001",
+            industry=Industry.CONSTRUCTION,
+            licensed_industries=[Industry.CONSTRUCTION],
+            company_name="Demo Construction Co"
+        )
+        state["tenant_context"] = tenant_ctx
+    
+    # Run the Director classification
+    classification: DirectorClassification = classify_with_director(
+        user_input=user_input,
+        tenant_context=tenant_ctx,
+        has_image=has_image
+    )
+    
+    # Inject into state (used by planner, RAG, synthesizer, logs, frontend)
+    state["query_industry"] = classification.primary_industry
+    state["was_cross_industry"] = classification.is_cross_industry
+    state["director_reasoning"] = classification.reasoning
+    
+    # Generate liability disclaimer when cross-industry (or when using only general knowledge)
+    disclaimer = build_disclaimer(classification, tenant_ctx)
+    state["disclaimer"] = disclaimer
+    
+    # Also keep the original query_intent for backward compatibility with existing branches
+    # (the old intent_classifier_node can stay or be merged later)
+    state["query_intent"] = classification.query_intent
+    state["intent_confidence"] = classification.confidence
+    state["intent_reasoning"] = classification.reasoning
+    
+    logger.info(
+        "Director routing complete",
+        tenant=tenant_ctx.tenant_id,
+        licensed=tenant_ctx.industry.value,
+        classified=classification.primary_industry.value,
+        intent=classification.query_intent.value,
+        cross_industry=classification.is_cross_industry,
+        has_disclaimer=bool(disclaimer)
+    )
+    
     return state
 
 
@@ -396,6 +462,7 @@ def build_field_service_agent():
     
     # Nodes
     workflow.add_node("input_fusion", input_fusion)
+    workflow.add_node("director", director_node)                 # NEW: SaaS multi-agent Director (industry router)
     workflow.add_node("intent_classifier", intent_classifier_node)
     workflow.add_node("context_loader", context_loader)
     workflow.add_node("vision_analysis", vision_node)
@@ -406,9 +473,10 @@ def build_field_service_agent():
     workflow.add_node("synthesizer", synthesizer_node)
     workflow.add_node("memory_updater", memory_updater_node)
     
-    # Flow
+    # Flow - SaaS Multi-tenant with Director (industry router) first
     workflow.set_entry_point("input_fusion")
-    workflow.add_edge("input_fusion", "intent_classifier")
+    workflow.add_edge("input_fusion", "director")          # NEW: Multi-agent Director (industry + intent router)
+    workflow.add_edge("director", "intent_classifier")     # Keep old intent classifier for now (can be merged later)
     workflow.add_edge("intent_classifier", "context_loader")
     
     workflow.add_conditional_edges(
@@ -443,9 +511,20 @@ async def run_agent_turn(
     session_id: str,
     user_input: str,
     image_b64: str | None = None,
-    technician_id: str = "tech-001"
+    technician_id: str = "tech-001",
+    # NEW: SaaS tenant context (fake for prototype, JWT claims later)
+    tenant_context: Optional[TenantContext] = None,
 ) -> dict:
     agent = get_field_agent()
+    
+    # Build tenant context (prototype default)
+    if tenant_context is None:
+        tenant_context = TenantContext(
+            tenant_id="demo-tenant-001",
+            industry=Industry.CONSTRUCTION,
+            licensed_industries=[Industry.CONSTRUCTION],
+            company_name="Demo Tenant"
+        )
     
     initial_state: AgentState = {
         "session_id": session_id,
@@ -471,25 +550,41 @@ async def run_agent_turn(
         "query_intent": None,
         "intent_confidence": None,
         "intent_reasoning": None,
+        # NEW SaaS fields
+        "tenant_context": tenant_context,
+        "query_industry": None,
+        "was_cross_industry": False,
+        "director_reasoning": None,
+        "disclaimer": None,
     }
     
     try:
         final_state = await agent.ainvoke(initial_state)
+        
+        # Extract SaaS fields for the response
+        response_payload = {
+            "immediate": final_state.get("final_response"),
+            "voice": final_state.get("voice_response"),
+            "plan": final_state.get("plan"),
+            "vision": final_state.get("vision_result"),
+            "confidence": final_state.get("confidence_score"),
+            "needs_escalation": final_state.get("needs_escalation"),
+            "trace_id": final_state.get("trace_id"),
+            "tools_used": final_state.get("tools_used", []),
+            "query_intent": final_state.get("query_intent"),
+            "intent_confidence": final_state.get("intent_confidence"),
+            # SaaS multi-tenant fields
+            "query_industry": final_state.get("query_industry"),
+            "was_cross_industry": final_state.get("was_cross_industry", False),
+            "disclaimer": final_state.get("disclaimer"),
+            "director_reasoning": final_state.get("director_reasoning"),
+            "tenant_id": final_state.get("tenant_context", {}).tenant_id if final_state.get("tenant_context") else None,
+        }
+        
         return {
             "success": True,
             "state": final_state,
-            "response": {
-                "immediate": final_state.get("final_response"),
-                "voice": final_state.get("voice_response"),
-                "plan": final_state.get("plan"),
-                "vision": final_state.get("vision_result"),
-                "confidence": final_state.get("confidence_score"),
-                "needs_escalation": final_state.get("needs_escalation"),
-                "trace_id": final_state.get("trace_id"),
-                "tools_used": final_state.get("tools_used", []),
-                "query_intent": final_state.get("query_intent"),
-                "intent_confidence": final_state.get("intent_confidence"),
-            }
+            "response": response_payload
         }
     except Exception as e:
         logger.error("Agent run failed", error=str(e), exc_info=True)
@@ -503,5 +598,8 @@ async def run_agent_turn(
                 "confidence": 0.0,
                 "needs_escalation": True,
                 "query_intent": QueryIntent.UNKNOWN,
+                "query_industry": Industry.UNKNOWN,
+                "was_cross_industry": False,
+                "disclaimer": "An error occurred. Please try again.",
             }
         }
