@@ -2,7 +2,7 @@
 Centralized embedding configuration for the Multi-Modal FSA.
 
 This module ensures we ALWAYS use local Ollama embeddings and never fall back
-to OpenAI (which was causing the "No API key" error during ingestion).
+to OpenAI.
 """
 import os
 import structlog

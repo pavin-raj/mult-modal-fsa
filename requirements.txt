@@ -4,6 +4,7 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
 python-multipart>=0.0.12
+pypdf>=6.13.2
 
 # Agentic Framework
 langchain>=0.3.0
@@ -16,6 +17,7 @@ chromadb>=0.5.0
 llama-index-vector-stores-chroma>=0.2.0
 llama-index-embeddings-ollama>=0.3.0   # primary local embeddings (Ollama)
 llama-index-embeddings-openai>=0.2.0   # harmless stub - we override immediately with local model (fixes LlamaIndex default resolver)
+llama-index-readers-file>=0.1.0
 
 # Models & Inference (Ollama primary)
 ollama>=0.3.0
