@@ -140,12 +140,13 @@ def ingest_single_document(
     persist_dir: str = CHROMA_PERSIST_DIR
 ) -> bool:
     """
-    Add ONE document (PDF, MD or TXT) to the existing ChromaDB.
-    Uses pypdf directly for PDFs (more reliable + fewer dependencies).
-    Falls back to llama-index PDF reader only if pypdf fails.
+    Add ONE new document (PDF, MD, or TXT) to the EXISTING ChromaDB.
+    This is used by the live "Upload Document" feature in the app.
+    Does NOT require re-ingesting the entire knowledge base.
+    ROBUST VERSION: prefers pypdf / direct text extraction; falls back gracefully.
     """
     if MOCK_MODE:
-        logger.info(f"[MOCK] Would add: {original_filename}")
+        logger.info(f"[MOCK] Would have added document: {original_filename}")
         return True
 
     try:
@@ -158,63 +159,80 @@ def ingest_single_document(
 
         client = chromadb.PersistentClient(path=persist_dir)
         collection = client.get_or_create_collection(name="fsa_knowledge")
+
         vector_store = ChromaVectorStore(chroma_collection=collection)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
         path = Path(file_path)
         documents = []
+
         suffix = path.suffix.lower()
+        text_content = ""
 
         if suffix == ".pdf":
-            # Preferred: pypdf (light, fast, reliable)
+            # ROBUST PDF extraction - try pypdf first (fast, no llama dependency issues)
             try:
-                from pypdf import PdfReader
-                reader = PdfReader(str(path))
-                text = ""
+                import pypdf
+                reader = pypdf.PdfReader(str(path))
+                pages = []
                 for page in reader.pages:
-                    text += page.extract_text() or ""
-                if text.strip():
-                    documents.append(Document(
-                        text=text,
-                        metadata={"source_type": "manual", "filename": original_filename}
-                    ))
+                    t = page.extract_text() or ""
+                    if t.strip():
+                        pages.append(t)
+                text_content = "\n\n".join(pages)
+                logger.info(f"Extracted PDF with pypdf: {len(pages)} pages from {original_filename}")
             except Exception as pdf_err:
-                logger.warning(f"pypdf failed for {original_filename}, trying fallback: {pdf_err}")
-                # Fallback: llama-index reader
+                logger.warning(f"pypdf failed for {original_filename}: {pdf_err}. Trying pdfplumber fallback.")
                 try:
-                    from llama_index.readers.file import PDFReader
-                    reader = PDFReader()
-                    pdf_docs = reader.load_data(str(path))
-                    for d in pdf_docs:
-                        documents.append(Document(
-                            text=d.text,
-                            metadata={"source_type": "manual", "filename": original_filename}
-                        ))
-                except ImportError:
-                    logger.error("Neither pypdf nor llama-index-readers-file is available")
-                    return False
+                    import pdfplumber
+                    with pdfplumber.open(str(path)) as pdf:
+                        pages = [p.extract_text() or "" for p in pdf.pages]
+                        text_content = "\n\n".join(pages)
+                    logger.info(f"Extracted PDF with pdfplumber fallback: {original_filename}")
+                except Exception as pl_err:
+                    logger.error(f"All PDF extractors failed for {original_filename}: {pl_err}")
+                    # last resort: try pymupdf if available
+                    try:
+                        import fitz  # pymupdf
+                        doc = fitz.open(str(path))
+                        text_content = "\n\n".join([page.get_text() for page in doc])
+                        doc.close()
+                        logger.info("Extracted with pymupdf")
+                    except Exception as fitz_err:
+                        logger.error(f"Final PDF fallback also failed: {fitz_err}")
+                        return False
 
+            if text_content.strip():
+                documents.append(Document(
+                    text=text_content,
+                    metadata={"source_type": "manual", "filename": original_filename, "file_type": "pdf"}
+                ))
         else:
-            # Markdown / TXT
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            documents.append(Document(
-                text=content,
-                metadata={"source_type": "manual", "filename": original_filename}
-            ))
+            # MD / TXT
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                documents.append(Document(
+                    text=content,
+                    metadata={"source_type": "manual", "filename": original_filename, "file_type": suffix.lstrip(".")}
+                ))
+            except Exception as txt_err:
+                logger.error(f"Failed reading text file {original_filename}: {txt_err}")
+                return False
 
         if not documents:
-            logger.warning(f"No extractable text in {original_filename}")
+            logger.warning(f"No content extracted from {original_filename}")
             return False
 
         splitter = SentenceSplitter(chunk_size=512, chunk_overlap=64)
         nodes = splitter.get_nodes_from_documents(documents)
 
+        # Add to existing index (live upload key feature)
         index = VectorStoreIndex.from_vector_store(vector_store, storage_context=storage_context)
         index.insert_nodes(nodes)
 
-        logger.info(f"✅ Added {original_filename} ({len(nodes)} chunks)")
+        logger.info(f"✅ Successfully added {original_filename} to knowledge base ({len(nodes)} chunks)")
         return True
 
     except Exception as e:
-        logger.error(f"Failed to ingest {original_filename}", error=str(e))
+        logger.error(f"Failed to ingest single document {original_filename}", error=str(e))
         return False

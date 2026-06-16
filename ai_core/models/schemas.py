@@ -1,6 +1,6 @@
 """
 Pydantic models and TypedDicts for the Multi-Modal Field Service Assistant.
-Strong typing throughout the agentic system.
+Strong typing + Intent Classification for production-grade routing.
 """
 from __future__ import annotations
 from typing import TypedDict, List, Optional, Literal, Dict, Any
@@ -11,6 +11,15 @@ from enum import Enum
 # =============================================================================
 # Enums
 # =============================================================================
+class QueryIntent(str, Enum):
+    """Production-grade intent classification."""
+    TROUBLESHOOTING = "troubleshooting"           # Equipment issue, fault diagnosis, repair needed
+    GENERAL_EXPLANATION = "general_explanation"   # What is X? Explain HAZOP, definition, concept
+    PROCEDURE_LOOKUP = "procedure_lookup"         # How to do LOTO, step-by-step procedure
+    SAFETY_QUESTION = "safety_question"           # Is it safe to...? Risk assessment
+    PARTS_LOOKUP = "parts_lookup"                 # What is the part number for...?
+    UNKNOWN = "unknown"                           # Ambiguous or out of scope
+
 class Modality(str, Enum):
     TEXT = "text"
     VOICE = "voice"
@@ -19,6 +28,7 @@ class Modality(str, Enum):
 
 class AgentNode(str, Enum):
     INPUT_FUSION = "input_fusion"
+    INTENT_CLASSIFIER = "intent_classifier"
     CONTEXT_LOADER = "context_loader"
     VISION_ANALYSIS = "vision_analysis"
     RETRIEVAL = "retrieval"
@@ -59,7 +69,7 @@ class VisionResult(BaseModel):
     detected_faults: List[str] = Field(default_factory=list)
     visual_description: str = ""
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
-    bounding_boxes: List[Dict[str, Any]] = Field(default_factory=list)  # for future AR
+    bounding_boxes: List[Dict[str, Any]] = Field(default_factory=list)
     ocr_text: List[str] = Field(default_factory=list)
     raw_vlm_output: Optional[str] = None
 
@@ -67,7 +77,7 @@ class RetrievedDocument(BaseModel):
     content: str
     metadata: Dict[str, Any]
     score: float
-    source: str  # "manual", "sop", "case", "diagram"
+    source: str
     page_or_section: Optional[str] = None
 
 class RepairStep(BaseModel):
@@ -78,7 +88,7 @@ class RepairStep(BaseModel):
     safety_notes: List[str] = Field(default_factory=list)
     verification_criteria: str = ""
     status: StepStatus = StepStatus.PENDING
-    image_reference: Optional[str] = None  # diagram or photo id
+    image_reference: Optional[str] = None
 
 class GuidancePlan(BaseModel):
     diagnosis: str
@@ -99,14 +109,22 @@ class SafetyAssessment(BaseModel):
     mitigation_steps: List[str] = Field(default_factory=list)
     confidence: float
 
+# NEW: Structured output for the Intent Classifier (production best practice)
+class IntentClassification(BaseModel):
+    intent: QueryIntent = Field(..., description="The primary intent of the user's query")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="How confident the classifier is")
+    reasoning: str = Field(..., description="Brief explanation of why this intent was chosen")
+    requires_image: bool = Field(default=False, description="Whether the query would benefit from an image")
+    suggested_tools: List[str] = Field(default_factory=list, description="Which tools are likely needed")
+
 class AgentState(TypedDict):
-    """The central state object passed through the LangGraph."""
+    """Central state object passed through the LangGraph."""
     session_id: str
     technician_id: str
     timestamp: str
     current_modality: Modality
     latest_user_input: str
-    current_image_b64: Optional[str]  # base64 encoded
+    current_image_b64: Optional[str]
     equipment_context: Dict[str, Any]
     conversation_history: List[Message]
     vision_result: Optional[VisionResult]
@@ -119,8 +137,13 @@ class AgentState(TypedDict):
     needs_more_info: bool
     needs_escalation: bool
     final_response: Optional[str]
-    voice_response: Optional[str]  # TTS-ready text
+    voice_response: Optional[str]
     trace_id: str
+    
+    # NEW - Intent Classification (Production)
+    query_intent: Optional[QueryIntent]
+    intent_confidence: Optional[float]
+    intent_reasoning: Optional[str]
 
 # =============================================================================
 # API Request / Response Models
@@ -133,12 +156,6 @@ class AnalyzeImageRequest(BaseModel):
 class AnalyzeImageResponse(BaseModel):
     vision_result: VisionResult
     processing_time_ms: int
-
-class VoiceQueryRequest(BaseModel):
-    audio_b64: Optional[str] = None  # for server-side STT
-    transcript: Optional[str] = None  # if already transcribed client-side
-    session_id: str
-    image_b64: Optional[str] = None
 
 class GuidanceRequest(BaseModel):
     session_id: str
@@ -158,16 +175,13 @@ class GuidanceResponse(BaseModel):
     safety_warnings: List[str]
     trace_id: str
     next_actions: List[str] = Field(default_factory=list)
-
-class SessionStateResponse(BaseModel):
-    session_id: str
-    current_equipment: Optional[Dict[str, Any]]
-    conversation_length: int
-    last_plan_summary: Optional[str]
-    confidence: float
+    
+    # NEW - For general knowledge queries
+    query_intent: Optional[QueryIntent] = None
+    is_troubleshooting: bool = True   # False for pure knowledge questions
 
 # =============================================================================
-# Tool Output Schemas (for LangChain tools)
+# Tool Output Schemas
 # =============================================================================
 class ToolResult(BaseModel):
     success: bool
@@ -185,3 +199,10 @@ class CaseSummary(BaseModel):
     resolution: str
     outcome: str
     technician_notes: Optional[str] = None
+
+class SessionStateResponse(BaseModel):
+    session_id: str
+    current_equipment: Optional[Dict[str, Any]] = None
+    conversation_length: int = 0
+    last_plan_summary: Optional[str] = None
+    confidence: float = 0.0

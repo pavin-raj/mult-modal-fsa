@@ -14,10 +14,19 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langchain_core.tools import Tool
 
-from ai_core.models.schemas import AgentState, GuidancePlan, RepairStep, SafetyAssessment
+from ai_core.models.schemas import (
+    AgentState, 
+    GuidancePlan, 
+    RepairStep, 
+    SafetyAssessment,
+    QueryIntent,
+    IntentClassification
+)
 from ai_core.agents.tools.vision_tool import analyze_image
 from ai_core.agents.tools.rag_tool import retrieve_knowledge
 from ai_core.agents.tools.safety_tool import assess_safety
+from ai_core.agents.intent_classifier import classify_intent
+
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -25,6 +34,7 @@ logger = structlog.get_logger(__name__)
 MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:3b")
 MAX_STEPS = int(os.getenv("MAX_AGENT_STEPS", "12"))
+
 
 # =============================================================================
 # LLM Setup
@@ -34,10 +44,11 @@ def get_llm(temperature: float = 0.1):
         class MockLLM:
             def invoke(self, messages):
                 class Resp:
-                    content = '{"diagnosis": "Mock diagnosis from agent", "steps": [{"step_number":1,"description":"Mock step - isolate equipment","estimated_time_min":5,"required_tools":["multimeter"],"safety_notes":["Wear PPE"],"verification_criteria":"Equipment is safe to work on","status":"pending"}],"required_parts":["SEAL-X450-22"],"warnings":["Follow LOTO"],"estimated_total_time_min":45,"escalation_recommended":false,"citations":["SOP-EL-003","MAN-X450-Rev4"]}'
+                    content = '{"diagnosis": "Mock diagnosis", "confidence": 0.75, "steps": [{"step_number":1,"description":"Mock step - isolate equipment","estimated_time_min":5,"required_tools":["multimeter"],"safety_notes":["Wear PPE"],"verification_criteria":"Equipment is safe","status":"pending"}],"required_parts":["SEAL-X450-22"],"warnings":["Follow LOTO"],"estimated_total_time_min":45,"escalation_recommended":false,"citations":["SOP-EL-003"]}'
                 return Resp()
         return MockLLM()
-    return ChatOllama(model=LLM_MODEL, temperature=temperature, num_predict=1200)
+    return ChatOllama(model=LLM_MODEL, temperature=temperature, num_predict=1400)
+
 
 # =============================================================================
 # Tool Setup
@@ -45,37 +56,58 @@ def get_llm(temperature: float = 0.1):
 tools = [analyze_image, retrieve_knowledge, assess_safety]
 tool_node = ToolNode(tools)
 
+
 # =============================================================================
 # Graph Nodes
 # =============================================================================
+
 def input_fusion(state: AgentState) -> AgentState:
-    """Combine latest inputs and set initial context."""
     logger.info("Node: input_fusion", session=state["session_id"])
     if not state.get("trace_id"):
         state["trace_id"] = str(uuid.uuid4())
     state["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    # If image present but no vision yet, mark for analysis
-    if state.get("current_image_b64") and not state.get("vision_result"):
-        state["current_modality"] = "multimodal"
-    
     return state
 
+
+def intent_classifier_node(state: AgentState) -> AgentState:
+    """
+    Production Intent Classification node.
+    Runs early so we can route differently for troubleshooting vs knowledge queries.
+    """
+    logger.info("Node: intent_classifier")
+    
+    classification: IntentClassification = classify_intent(
+        user_input=state.get("latest_user_input", ""),
+        has_image=bool(state.get("current_image_b64"))
+    )
+    
+    state["query_intent"] = classification.intent
+    state["intent_confidence"] = classification.confidence
+    state["intent_reasoning"] = classification.reasoning
+    
+    logger.info(
+        "Intent classified",
+        intent=classification.intent.value,
+        confidence=classification.confidence,
+        reasoning=classification.reasoning[:100]
+    )
+    return state
+
+
 def context_loader(state: AgentState) -> AgentState:
-    """Load persistent context (simplified for now - would hit DB in prod)."""
     logger.info("Node: context_loader")
     if not state.get("equipment_context"):
         state["equipment_context"] = {
-            "id": "PUMP-X450-001",
-            "model": "X-450 Centrifugal Pump",
-            "location": "Building A - Cooling Tower",
-            "last_service": "2026-01-15",
-            "known_issues": ["previous seal replacement 8 months ago"]
+            "id": "UNKNOWN",
+            "model": "Unknown Equipment",
+            "location": "Unknown",
+            "last_service": "N/A",
+            "known_issues": []
         }
     return state
 
+
 def vision_node(state: AgentState) -> AgentState:
-    """Call vision tool if image is available."""
     if not state.get("current_image_b64"):
         return state
     
@@ -91,8 +123,8 @@ def vision_node(state: AgentState) -> AgentState:
         state["tools_used"].append("analyze_image")
     return state
 
+
 def retrieval_node(state: AgentState) -> AgentState:
-    """Retrieve relevant knowledge."""
     logger.info("Node: retrieval")
     
     query_parts = [state.get("latest_user_input", "")]
@@ -114,39 +146,78 @@ def retrieval_node(state: AgentState) -> AgentState:
         state["tools_used"].append("retrieve_knowledge")
     return state
 
+
 def planner_node(state: AgentState) -> AgentState:
-    """Generate structured diagnosis and step-by-step plan."""
-    logger.info("Node: planner")
-    llm = get_llm(temperature=0.2)
+    """
+    Intelligent planner that branches based on QueryIntent.
+    This is the core of the "proper production way".
+    """
+    logger.info("Node: planner", intent=state.get("query_intent"))
     
-    context = f"""Equipment Context: {state.get('equipment_context')}
+    intent = state.get("query_intent", QueryIntent.UNKNOWN)
+    
+    # Base context
+    context = f"""User Query: {state.get('latest_user_input')}
+Equipment Context: {state.get('equipment_context')}
 Vision Analysis: {state.get('vision_result')}
 Retrieved Knowledge (top excerpts):
-{chr(10).join(f"- {d.get('content','')[:300]}..." for d in state.get('retrieved_docs', [])[:3])}
-User Query: {state.get('latest_user_input')}
+{chr(10).join(f"- {d.get('content','')[:280]}..." for d in state.get('retrieved_docs', [])[:3])}
 """
+
+    # === MOCK SHORT-CIRCUIT (guarantees branching for demo / when no Ollama) ===
+    if MOCK_MODE:
+        if intent == QueryIntent.TROUBLESHOOTING:
+            state["plan"] = {
+                "diagnosis": "Worn mechanical seal and/or impeller misalignment (based on symptoms + past cases).",
+                "confidence": 0.78,
+                "steps": [
+                    {"step_number": 1, "description": "Isolate power and verify zero energy state (LOTO)", "estimated_time_min": 5, "required_tools": ["lockout kit"], "safety_notes": ["Follow SOP-EL-003", "Wear PPE"], "verification_criteria": "No voltage present", "status": "pending"},
+                    {"step_number": 2, "description": "Drain system and remove coupling guard", "estimated_time_min": 8, "required_tools": ["wrench set"], "safety_notes": ["Confirm zero pressure"], "verification_criteria": "System drained", "status": "pending"},
+                    {"step_number": 3, "description": "Replace mechanical seal (SEAL-X450-22) and check shaft runout", "estimated_time_min": 25, "required_tools": ["seal puller", "dial indicator"], "safety_notes": ["Support shaft during removal"], "verification_criteria": "Runout < 0.002 inch", "status": "pending"}
+                ],
+                "required_parts": ["SEAL-X450-22", "SHAFT-X450"],
+                "warnings": ["Always perform full alignment after seal work"],
+                "estimated_total_time_min": 45,
+                "escalation_recommended": False,
+                "citations": ["X-450-Centrifugal-Pump-Manual.md", "past_cases.json"]
+            }
+            state["confidence_score"] = 0.78
+        else:
+            # GENERAL_EXPLANATION / PROCEDURE_LOOKUP / etc. → empty steps, clear explanation
+            if "hazop" in (state.get("latest_user_input", "").lower()):
+                diagnosis = "HAZOP (Hazard and Operability Study) is a structured technique to identify potential hazards and operability problems in process systems before they occur."
+            else:
+                diagnosis = "This is general industrial knowledge / procedure information (not an active fault report)."
+            state["plan"] = {
+                "diagnosis": diagnosis,
+                "confidence": 0.85,
+                "steps": [],   # intentionally empty for non-troubleshooting
+                "required_parts": [],
+                "warnings": [],
+                "estimated_total_time_min": 0,
+                "escalation_recommended": False,
+                "citations": ["X-450-Centrifugal-Pump-Manual.md", "SOP-EL-003-Lockout-Tagout.md"]
+            }
+            state["confidence_score"] = 0.85
+        
+        state["tools_used"].append("planner")
+        return state
+
+    # === REAL LLM PATH ===
+    llm = get_llm(temperature=0.15)
     
-    system = SystemMessage(content="""You are an expert senior field service technician and diagnostician with 20+ years experience.
+    if intent == QueryIntent.TROUBLESHOOTING:
+        system = SystemMessage(content="""You are an expert senior field service technician and diagnostician.
 
 Your job is to produce a clear, safe, actionable repair plan.
 
-Always output valid JSON matching this exact schema (no extra text):
+Output ONLY valid JSON:
 {
   "diagnosis": "concise root cause hypothesis",
   "confidence": 0.0-1.0,
-  "steps": [
-    {
-      "step_number": 1,
-      "description": "Clear actionable instruction",
-      "estimated_time_min": 5,
-      "required_tools": ["list"],
-      "safety_notes": ["list of warnings"],
-      "verification_criteria": "How to know this step succeeded",
-      "status": "pending"
-    }
-  ],
-  "required_parts": ["part numbers or descriptions"],
-  "warnings": ["critical safety or process warnings"],
+  "steps": [ { "step_number": 1, "description": "...", "estimated_time_min": 5, "required_tools": [...], "safety_notes": [...], "verification_criteria": "...", "status": "pending" } ],
+  "required_parts": [...],
+  "warnings": [...],
   "estimated_total_time_min": 30,
   "escalation_recommended": false,
   "citations": ["document references"]
@@ -154,46 +225,71 @@ Always output valid JSON matching this exact schema (no extra text):
 
 Rules:
 - Every step must include safety_notes.
-- If confidence < 0.65, set escalation_recommended=true and add warning.
-- Prioritize LOTO and PPE in early steps when relevant.
-- Base every recommendation on the retrieved knowledge when possible.
+- Base recommendations on retrieved knowledge when possible.
+- If confidence < 0.6, set escalation_recommended=true.
+""")
+    
+    else:
+        # General explanation / procedure / safety / unknown
+        system = SystemMessage(content="""You are a helpful industrial knowledge assistant.
+
+The user is asking a general question (not necessarily reporting a fault).
+
+Output ONLY valid JSON in this format:
+{
+  "diagnosis": "Clear, direct answer to the user's question (1-2 sentences)",
+  "confidence": 0.0-1.0,
+  "steps": [],                    // Leave empty for non-troubleshooting queries
+  "required_parts": [],
+  "warnings": [],
+  "estimated_total_time_min": 0,
+  "escalation_recommended": false,
+  "citations": ["relevant document references if any"]
+}
+
+Be accurate and helpful. If the question is about a standard (HAZOP, LOTO, etc.), give a clear explanation + key points.
 """)
 
-    human = HumanMessage(content=f"Current situation:\n{context}\n\nProduce the JSON plan now.")
+    human = HumanMessage(content=f"Current situation:\n{context}\n\nProduce the JSON response now.")
 
     try:
         response = llm.invoke([system, human])
         import json, re
         content = response.content.strip()
         json_str = re.search(r'\{.*\}', content, re.DOTALL)
-        if json_str:
-            plan_dict = json.loads(json_str.group(0))
-        else:
-            plan_dict = json.loads(content)
+        plan_dict = json.loads(json_str.group(0)) if json_str else json.loads(content)
         
         plan = GuidancePlan(**plan_dict)
         state["plan"] = plan.model_dump()
         state["confidence_score"] = plan.confidence
         state["tools_used"].append("planner")
+        
     except Exception as e:
-        logger.error("Planner failed", error=str(e))
-        # Fallback minimal plan
+        logger.error("Planner failed", error=str(e), intent=intent)
+        # Safe fallback
         state["plan"] = {
-            "diagnosis": "Unable to generate full plan. Defaulting to safe isolation.",
-            "confidence": 0.4,
-            "steps": [{"step_number": 1, "description": "Stop work and isolate equipment using LOTO. Contact supervisor.", "estimated_time_min": 5, "required_tools": [], "safety_notes": ["Do not proceed without confirmation"], "verification_criteria": "Equipment isolated", "status": "pending"}],
+            "diagnosis": "Unable to generate a detailed response. Please provide more details or try again.",
+            "confidence": 0.3,
+            "steps": [],
             "required_parts": [],
-            "warnings": ["System could not generate reliable plan"],
-            "estimated_total_time_min": 5,
-            "escalation_recommended": True,
+            "warnings": ["System could not generate a reliable answer"],
+            "estimated_total_time_min": 0,
+            "escalation_recommended": False,
             "citations": []
         }
-        state["confidence_score"] = 0.4
+        state["confidence_score"] = 0.3
     
     return state
 
+
 def safety_gate_node(state: AgentState) -> AgentState:
-    """Run mandatory safety assessment."""
+    """Only run safety assessment for troubleshooting queries."""
+    intent = state.get("query_intent", QueryIntent.UNKNOWN)
+    
+    if intent != QueryIntent.TROUBLESHOOTING:
+        logger.info("Skipping safety gate for non-troubleshooting intent", intent=intent)
+        return state
+    
     logger.info("Node: safety_gate")
     
     plan = state.get("plan", {})
@@ -206,70 +302,81 @@ def safety_gate_node(state: AgentState) -> AgentState:
         state["safety_assessment"] = result["data"]
         state["tools_used"].append("assess_safety")
         
-        # Inject safety into plan
         if state.get("plan"):
             state["plan"]["safety_assessment"] = result["data"]
-            if result["data"].get("lockout_required"):
-                state["plan"]["warnings"] = state["plan"].get("warnings", []) + ["LOCKOUT/TAGOUT REQUIRED - Do not proceed without verification"]
     
     return state
 
+
 def reflection_node(state: AgentState) -> AgentState:
-    """Self-critique and decide next action."""
     logger.info("Node: reflection")
     
     confidence = state.get("confidence_score", 0.5)
-    safety = state.get("safety_assessment", {})
+    # CRITICAL FIX: initial_state sets safety_assessment=None explicitly.
+    # state.get(key, default) returns the stored None (key present), not the default.
+    # Must use "or {}" or explicit None check.
+    safety = state.get("safety_assessment") or {}
+    intent = state.get("query_intent", QueryIntent.UNKNOWN)
     
-    state["needs_more_info"] = confidence < 0.6
+    state["needs_more_info"] = confidence < 0.55
     state["needs_escalation"] = (
-        confidence < 0.5 or 
-        safety.get("overall_risk") in ["high", "critical"] or
-        state.get("plan", {}).get("escalation_recommended", False)
+        confidence < 0.45 or 
+        (isinstance(safety, dict) and safety.get("overall_risk") in ["high", "critical"]) or
+        (state.get("plan") or {}).get("escalation_recommended", False)
     )
     
     return state
 
+
 def synthesizer_node(state: AgentState) -> AgentState:
-    """Create final technician-friendly response (text + voice)."""
+    """
+    Final response synthesizer.
+    Creates different output styles depending on the intent.
+    """
     logger.info("Node: synthesizer")
     
     plan = state.get("plan", {})
     vision = state.get("vision_result")
     safety = state.get("safety_assessment", {})
+    intent = state.get("query_intent", QueryIntent.UNKNOWN)
     
-    # Build immediate response
     immediate = []
+    
     if vision:
         immediate.append(f"Equipment identified: {vision.get('equipment_model', 'Unknown')}")
         if vision.get("detected_faults"):
             immediate.append(f"Visible issues: {', '.join(vision['detected_faults'])}")
     
     if plan.get("diagnosis"):
-        immediate.append(f"Diagnosis: {plan['diagnosis']}")
+        immediate.append(plan["diagnosis"])
     
-    immediate_text = ". ".join(immediate) if immediate else "Analyzing situation..."
+    immediate_text = ". ".join(immediate) if immediate else "I have processed your query."
     
-    # Voice-friendly summary
-    voice = f"{immediate_text}. "
-    if plan.get("steps"):
-        first_step = plan["steps"][0]["description"]
-        voice += f"First step: {first_step}. "
-    if safety.get("lockout_required"):
-        voice += "Remember: Lockout Tagout is required. "
-    voice += "Do you want to proceed with the next step, or provide more information?"
+    # Voice-friendly version
+    if intent == QueryIntent.TROUBLESHOOTING:
+        voice = f"{immediate_text}. "
+        if plan.get("steps"):
+            first_step = plan["steps"][0]["description"]
+            voice += f"First recommended step: {first_step}. "
+        if safety.get("lockout_required"):
+            voice += "Remember: Lockout Tagout is required. "
+        voice += "Do you want to proceed with the next step?"
+    else:
+        voice = immediate_text
+        if plan.get("citations"):
+            voice += " Sources: " + ", ".join(plan["citations"][:2]) + "."
     
     state["final_response"] = immediate_text
     state["voice_response"] = voice
     
     return state
 
+
 def memory_updater_node(state: AgentState) -> AgentState:
-    """Log the interaction for future retrieval (stub)."""
     logger.info("Node: memory_updater", session=state["session_id"])
-    # In production: persist to Postgres + update vector store with new observation
-    # For now we just log
+    # In production: persist structured observations, update equipment profiles, etc.
     return state
+
 
 # =============================================================================
 # Conditional Edges
@@ -279,20 +386,17 @@ def should_run_vision(state: AgentState) -> Literal["vision_analysis", "retrieva
         return "vision_analysis"
     return "retrieval"
 
-def should_continue(state: AgentState) -> Literal["tool_executor", "synthesizer"]:
-    # For simplicity in this version, we run tools via explicit nodes
-    # In more advanced versions you would use ReAct style here
-    return "synthesizer"
 
 # =============================================================================
 # Graph Construction
 # =============================================================================
 def build_field_service_agent():
-    """Construct and compile the LangGraph workflow."""
+    """Production LangGraph with Intent Classification."""
     workflow = StateGraph(AgentState)
     
-    # Add nodes
+    # Nodes
     workflow.add_node("input_fusion", input_fusion)
+    workflow.add_node("intent_classifier", intent_classifier_node)
     workflow.add_node("context_loader", context_loader)
     workflow.add_node("vision_analysis", vision_node)
     workflow.add_node("retrieval", retrieval_node)
@@ -302,16 +406,15 @@ def build_field_service_agent():
     workflow.add_node("synthesizer", synthesizer_node)
     workflow.add_node("memory_updater", memory_updater_node)
     
-    # Define flow
+    # Flow
     workflow.set_entry_point("input_fusion")
-    workflow.add_edge("input_fusion", "context_loader")
+    workflow.add_edge("input_fusion", "intent_classifier")
+    workflow.add_edge("intent_classifier", "context_loader")
+    
     workflow.add_conditional_edges(
         "context_loader",
         should_run_vision,
-        {
-            "vision_analysis": "vision_analysis",
-            "retrieval": "retrieval"
-        }
+        {"vision_analysis": "vision_analysis", "retrieval": "retrieval"}
     )
     workflow.add_edge("vision_analysis", "retrieval")
     workflow.add_edge("retrieval", "planner")
@@ -323,24 +426,25 @@ def build_field_service_agent():
     
     return workflow.compile()
 
-# Singleton compiled graph
+
+# Singleton
 _field_agent = None
 
 def get_field_agent():
     global _field_agent
     if _field_agent is None:
         _field_agent = build_field_service_agent()
-        logger.info("Field Service Agent graph compiled successfully")
+        logger.info("Production Field Service Agent graph compiled with Intent Classification")
     return _field_agent
 
-# Convenience function for direct invocation
+
+# Convenience async runner (kept for backward compatibility)
 async def run_agent_turn(
     session_id: str,
     user_input: str,
     image_b64: str | None = None,
     technician_id: str = "tech-001"
 ) -> dict:
-    """Run one full turn of the agent and return final state + response."""
     agent = get_field_agent()
     
     initial_state: AgentState = {
@@ -363,7 +467,10 @@ async def run_agent_turn(
         "needs_escalation": False,
         "final_response": None,
         "voice_response": None,
-        "trace_id": ""
+        "trace_id": "",
+        "query_intent": None,
+        "intent_confidence": None,
+        "intent_reasoning": None,
     }
     
     try:
@@ -379,7 +486,9 @@ async def run_agent_turn(
                 "confidence": final_state.get("confidence_score"),
                 "needs_escalation": final_state.get("needs_escalation"),
                 "trace_id": final_state.get("trace_id"),
-                "tools_used": final_state.get("tools_used", [])
+                "tools_used": final_state.get("tools_used", []),
+                "query_intent": final_state.get("query_intent"),
+                "intent_confidence": final_state.get("intent_confidence"),
             }
         }
     except Exception as e:
@@ -388,10 +497,11 @@ async def run_agent_turn(
             "success": False,
             "error": str(e),
             "response": {
-                "immediate": "I encountered an error while reasoning. Please try again or contact support.",
+                "immediate": "I encountered an error while processing your query. Please try again.",
                 "voice": "Sorry, there was a problem processing your request.",
                 "plan": None,
                 "confidence": 0.0,
-                "needs_escalation": True
+                "needs_escalation": True,
+                "query_intent": QueryIntent.UNKNOWN,
             }
         }
