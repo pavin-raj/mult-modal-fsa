@@ -13,6 +13,7 @@ from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langchain_core.tools import Tool
+from ai_core.agents.tools.image_renderer_tool import annotate_image
 
 from ai_core.models.schemas import (
     AgentState, 
@@ -210,6 +211,33 @@ def retrieval_node(state: AgentState) -> AgentState:
     if result.get("success"):
         state["retrieved_docs"] = result["data"]
         state["tools_used"].append("retrieve_knowledge")
+    return state
+
+
+def annotation_node(state: AgentState) -> AgentState:
+    """
+    Option B: render vision bounding boxes onto the original photo.
+    Runs right after vision_analysis. No-ops gracefully if no image / no boxes.
+    """
+    if not state.get("current_image_b64"):
+        return state
+
+    vision = state.get("vision_result") or {}
+    boxes = vision.get("bounding_boxes") or []
+    if not boxes:
+        logger.info("Node: annotation skipped (no bounding boxes)")
+        return state
+
+    logger.info("Node: annotation", num_boxes=len(boxes))
+    result = annotate_image.invoke({
+        "image_b64": state["current_image_b64"],
+        "bounding_boxes": boxes,
+        "detected_faults": vision.get("detected_faults", []),
+    })
+
+    if result.get("success"):
+        state["annotated_image"] = result["data"]
+        state["tools_used"].append("annotate_image")
     return state
 
 
@@ -472,6 +500,7 @@ def build_field_service_agent():
     workflow.add_node("reflection", reflection_node)
     workflow.add_node("synthesizer", synthesizer_node)
     workflow.add_node("memory_updater", memory_updater_node)
+    workflow.add_node("annotation", annotation_node)
     
     # Flow - SaaS Multi-tenant with Director (industry router) first
     workflow.set_entry_point("input_fusion")
@@ -484,7 +513,8 @@ def build_field_service_agent():
         should_run_vision,
         {"vision_analysis": "vision_analysis", "retrieval": "retrieval"}
     )
-    workflow.add_edge("vision_analysis", "retrieval")
+    workflow.add_edge("vision_analysis", "annotation")
+    workflow.add_edge("annotation", "retrieval")
     workflow.add_edge("retrieval", "planner")
     workflow.add_edge("planner", "safety_gate")
     workflow.add_edge("safety_gate", "reflection")
@@ -550,12 +580,12 @@ async def run_agent_turn(
         "query_intent": None,
         "intent_confidence": None,
         "intent_reasoning": None,
-        # NEW SaaS fields
         "tenant_context": tenant_context,
         "query_industry": None,
         "was_cross_industry": False,
         "director_reasoning": None,
         "disclaimer": None,
+        "annotated_image": None,
     }
     
     try:
@@ -579,6 +609,7 @@ async def run_agent_turn(
             "disclaimer": final_state.get("disclaimer"),
             "director_reasoning": final_state.get("director_reasoning"),
             "tenant_id": final_state.get("tenant_context", {}).tenant_id if final_state.get("tenant_context") else None,
+            "annotated_image": final_state.get("annotated_image"),
         }
         
         return {
@@ -601,5 +632,6 @@ async def run_agent_turn(
                 "query_industry": Industry.UNKNOWN,
                 "was_cross_industry": False,
                 "disclaimer": "An error occurred. Please try again.",
+                "annotated_image": None
             }
         }

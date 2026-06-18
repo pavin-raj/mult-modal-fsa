@@ -109,6 +109,19 @@ class VisionResult(BaseModel):
     ocr_text: List[str] = Field(default_factory=list)
     raw_vlm_output: Optional[str] = None
 
+# ---- Add near the other core models (after VisionResult) ----
+class AnnotatedImage(BaseModel):
+    """The user's input image with detected faults drawn on it.
+    `image_b64` is a data URL (data:image/png;base64,...) so the frontend
+    can drop it straight into an <img src>."""
+    image_b64: str
+    format: str = "png"
+    width: int = 0
+    height: int = 0
+    boxes_drawn: int = 0
+    labels: List[str] = Field(default_factory=list)
+    caption: Optional[str] = None
+
 class RetrievedDocument(BaseModel):
     content: str
     metadata: Dict[str, Any]
@@ -174,6 +187,7 @@ class AgentState(TypedDict):
     final_response: Optional[str]
     voice_response: Optional[str]
     trace_id: str
+    annotated_image: Optional[AnnotatedImage]
     
     # Intent Classification (Production)
     query_intent: Optional[QueryIntent]
@@ -197,6 +211,7 @@ class AnalyzeImageRequest(BaseModel):
 
 class AnalyzeImageResponse(BaseModel):
     vision_result: VisionResult
+    annotated_image: Optional[AnnotatedImage] = None
     processing_time_ms: int
 
 class GuidanceRequest(BaseModel):
@@ -213,6 +228,7 @@ class GuidanceRequest(BaseModel):
 class GuidanceResponse(BaseModel):
     session_id: str
     plan: Optional[GuidancePlan] = None
+    annotated_image: Optional[AnnotatedImage] = None
     immediate_response: str
     voice_text: str
     citations: List[str]

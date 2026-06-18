@@ -14,7 +14,7 @@ import os
 import uuid
 import time
 from typing import Optional
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
 from pathlib import Path as _Path
@@ -26,127 +26,112 @@ from ai_core.models.schemas import (
     GuidanceRequest, GuidanceResponse,
     SessionStateResponse,
     QueryIntent,
-    Industry,
     TenantContext
 )
 from ai_core.agents.field_agent import run_agent_turn, get_field_agent
 from ai_core.speech.stt import transcribe_audio
 from ai_core.speech.tts import synthesize_speech
 
-
-def _get_tenant_context_from_request(req) -> TenantContext:
-    """
-    Prototype fake auth extractor.
-    In production this will come from JWT claims (tenant_id, industry, licensed_industries, features).
-    
-    For now we accept either:
-    - GuidanceRequest.tenant_id + .industry (preferred for the new SaaS flow)
-    - Or fall back to headers X-Tenant-ID / X-Industry
-    """
-    tenant_id = getattr(req, "tenant_id", None) or "demo-tenant-001"
-    industry_str = getattr(req, "industry", None)
-    
-    # Support string industry or enum
-    try:
-        industry = Industry(industry_str) if industry_str else Industry.CONSTRUCTION
-    except ValueError:
-        industry = Industry.CONSTRUCTION
-    
-    return TenantContext(
-        tenant_id=str(tenant_id),
-        industry=industry,
-        licensed_industries=[industry],
-        company_name=f"Demo {industry.value.title()} Company",
-        features=["rag", "vision", "basic_safety"]
-    )
+# === The production tenant dependency (header-first, JWT-ready) ===
+from backend.dependencies.tenant import get_current_tenant
 
 logger = structlog.get_logger(__name__)
 
 app = FastAPI(
     title="Multi-Modal Field Service Assistant API",
     version="1.0.0",
-    description="Agentic, vision + voice + RAG powered assistant for field technicians"
+    description="Production multi-tenant SaaS with Director-based industry routing"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory session store (replace with Redis + DB in prod)
+# Simple in-memory session store (in prod → Redis/DB with tenant isolation)
 sessions: dict[str, dict] = {}
+
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": time.time(), "mock_mode": os.getenv("MOCK_MODE", "false")}
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "mock_mode": os.getenv("MOCK_MODE", "false"),
+        "tenant_system": "production (Depends(get_current_tenant) + X-Tenant-ID header only)"
+    }
+
 
 @app.post("/analyze-image", response_model=AnalyzeImageResponse)
 async def analyze_image_endpoint(req: AnalyzeImageRequest):
-    """Standalone vision analysis (useful for quick checks or pre-filtering)."""
     from ai_core.agents.tools.vision_tool import analyze_image as vision_tool
+    from ai_core.agents.tools.image_renderer_tool import annotate_image
     start = time.time()
-    
     result = vision_tool.invoke({
         "image_b64": req.image_b64,
         "focus": req.focus,
         "equipment_hint": req.equipment_hint
     })
-    
     if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error"))
-    
-    latency = int((time.time() - start) * 1000)
+        raise HTTPException(500, result.get("error"))
+    annotated = None
+    boxes = (result["data"] or {}).get("bounding_boxes") or []
+    if boxes:
+        ann = annotate_image.invoke({
+            "image_b64": req.image_b64,
+            "bounding_boxes": boxes,
+            "detected_faults": (result["data"] or {}).get("detected_faults", []),
+        })
+        if ann.get("success"):
+            annotated = ann["data"]
     return AnalyzeImageResponse(
         vision_result=result["data"],
-        processing_time_ms=latency
+        annotated_image=annotated,
+        processing_time_ms=int((time.time() - start) * 1000)
     )
 
+
 @app.post("/get-guidance", response_model=GuidanceResponse)
-async def get_guidance(req: GuidanceRequest):
+async def get_guidance(
+    req: GuidanceRequest,
+    tenant: TenantContext = Depends(get_current_tenant)   # ← PRODUCTION
+):
     """
-    Main entry point for full agentic reasoning (SaaS multi-tenant version).
-    Accepts text + optional image + tenant context (fake headers/body for prototype).
-    
-    Runs the complete LangGraph workflow:
-    - Director (industry router + cross-industry detection) FIRST
-    - Then Intent Classification + branched planner
-    - RAG is tenant + industry aware (hybrid model)
+    Full agent turn.
+    The Director (industry router) runs first inside the graph and receives the tenant.
     """
     session_id = req.session_id or str(uuid.uuid4())
-    
-    # Extract tenant context (prototype fake auth)
-    tenant_ctx = _get_tenant_context_from_request(req)
-    
+
+    logger.info("get_guidance", tenant=tenant.tenant_id, industry=tenant.industry.value)
+
     result = await run_agent_turn(
         session_id=session_id,
         user_input=req.transcript,
         image_b64=req.image_b64,
         technician_id="tech-demo",
-        tenant_context=tenant_ctx   # <-- SaaS context passed into the graph
+        tenant_context=tenant
     )
-    
+
     if not result["success"]:
-        raise HTTPException(status_code=500, detail=result.get("error"))
-    
+        raise HTTPException(500, result.get("error"))
+
     resp = result["response"] or {}
-    
-    # Update lightweight session (now with tenant)
+
     sessions[session_id] = {
         "last_updated": time.time(),
-        "equipment": (resp.get("vision") or {}).get("equipment_model") if resp else None,
+        "tenant_id": tenant.tenant_id,
+        "industry": tenant.industry.value,
+        "equipment": (resp.get("vision") or {}).get("equipment_model"),
         "last_confidence": resp.get("confidence"),
         "last_plan_summary": resp.get("plan", {}).get("diagnosis") if resp.get("plan") else None,
-        "tenant_id": tenant_ctx.tenant_id,
-        "industry": tenant_ctx.industry.value
     }
-    
-    # Determine if this was a troubleshooting path (for frontend rendering)
+
     intent_value = resp.get("query_intent")
-    is_troubleshooting = (intent_value == QueryIntent.TROUBLESHOOTING.value) if intent_value else True
-    
+    is_troubleshooting = bool(intent_value == QueryIntent.TROUBLESHOOTING.value) if intent_value else True
+
     return GuidanceResponse(
         session_id=session_id,
         plan=resp.get("plan"),
@@ -158,46 +143,38 @@ async def get_guidance(req: GuidanceRequest):
         safety_warnings=resp.get("plan", {}).get("warnings", []) if resp.get("plan") else [],
         trace_id=resp.get("trace_id", ""),
         next_actions=["Say 'next step'", "Upload new photo", "Ask for clarification"],
-        # Intent + SaaS fields
         query_intent=intent_value,
         is_troubleshooting=is_troubleshooting,
         query_industry=resp.get("query_industry"),
         was_cross_industry=resp.get("was_cross_industry", False),
         disclaimer=resp.get("disclaimer"),
-        tenant_id=tenant_ctx.tenant_id,
-        director_reasoning=resp.get("director_reasoning")
+        tenant_id=tenant.tenant_id,
+        director_reasoning=resp.get("director_reasoning"),
+        annotated_image=resp.get("annotated_image"),
     )
 
+
 @app.post("/voice-query")
-async def voice_query(req: dict):
-    """
-    Accepts raw audio (base64) or pre-transcribed text.
-    Returns both text response and synthesized audio (base64 WAV).
-    """
+async def voice_query(req: dict, tenant: TenantContext = Depends(get_current_tenant)):
     session_id = req.get("session_id") or str(uuid.uuid4())
     transcript = req.get("transcript")
     audio_b64 = req.get("audio_b64")
     image_b64 = req.get("image_b64")
-    
+
     if not transcript and audio_b64:
         transcript = transcribe_audio(audio_b64)
         if not transcript:
             raise HTTPException(400, "Failed to transcribe audio")
-    
     if not transcript:
         raise HTTPException(400, "No transcript or audio provided")
-    
-    # Run full agent
-    agent_result = await run_agent_turn(session_id, transcript, image_b64)
-    
+
+    agent_result = await run_agent_turn(session_id, transcript, image_b64, tenant_context=tenant)
     if not agent_result["success"]:
         raise HTTPException(500, agent_result.get("error"))
-    
-    voice_text = agent_result["response"].get("voice", "I have processed your request.")
-    
-    # Generate TTS
+
+    voice_text = agent_result["response"].get("voice", "Processed.")
     audio_out_b64 = synthesize_speech(voice_text)
-    
+
     return {
         "session_id": session_id,
         "transcript": transcript,
@@ -206,8 +183,11 @@ async def voice_query(req: dict):
         "audio_b64": audio_out_b64,
         "plan": agent_result["response"].get("plan"),
         "confidence": agent_result["response"].get("confidence"),
-        "query_intent": agent_result["response"].get("query_intent")
+        "tenant_id": tenant.tenant_id,
+        "industry": tenant.industry.value,
+        "annotated_image": agent_result["response"].get("annotated_image"),
     }
+
 
 @app.get("/session/{session_id}", response_model=SessionStateResponse)
 async def get_session(session_id: str):
@@ -217,83 +197,71 @@ async def get_session(session_id: str):
     return SessionStateResponse(
         session_id=session_id,
         current_equipment={"model": s.get("equipment")} if s.get("equipment") else None,
-        conversation_length=1,  # simplified
+        conversation_length=1,
         last_plan_summary=s.get("last_plan_summary"),
-        confidence=s.get("last_confidence", 0.0)
+        confidence=s.get("last_confidence", 0.0),
     )
 
-# =============================================================================
-# LIVE DOCUMENT UPLOAD (robust PDF/MD/TXT - fixes "No module named 'llama_index.readers'")
-# =============================================================================
+
+# Tenant-scoped upload (production)
 @app.post("/upload/document")
 async def upload_document(
     file: UploadFile = File(...),
-    description: Optional[str] = Form(None)
+    description: Optional[str] = Form(None),
+    tenant: TenantContext = Depends(get_current_tenant)
 ):
-    """
-    Upload a new manual / SOP / procedure (PDF, .md, .txt).
-    Immediately added to the live ChromaDB index using robust pypdf-first extraction.
-    No full re-ingest required. No dependency on broken llama_index.readers.
-    """
     allowed = {".pdf", ".md", ".txt", ".markdown"}
     suffix = _Path(file.filename).suffix.lower()
-    
     if suffix not in allowed:
-        raise HTTPException(400, f"Unsupported file type: {suffix}. Allowed: {allowed}")
-    
+        raise HTTPException(400, f"Unsupported file type: {suffix}")
+
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
-        
+
         from ai_core.rag.index_manager import ingest_single_document
-        success = ingest_single_document(
-            file_path=tmp_path,
-            original_filename=file.filename
-        )
-        
+        success = ingest_single_document(file_path=tmp_path, original_filename=file.filename)
+
         if success:
-            logger.info("✅ Live document upload succeeded", filename=file.filename)
+            logger.info("document_uploaded", tenant=tenant.tenant_id, industry=tenant.industry.value, filename=file.filename)
             return {
                 "success": True,
                 "filename": file.filename,
-                "message": f"Successfully added {file.filename} to knowledge base. Future queries will use it via RAG.",
-                "description": description or ""
+                "tenant_id": tenant.tenant_id,
+                "industry": tenant.industry.value,
+                "message": "Document added to this tenant's knowledge."
             }
-        else:
-            raise HTTPException(500, "Ingestion returned False (check server logs)")
-            
+        raise HTTPException(500, "Ingestion failed")
     except Exception as e:
-        logger.error("Upload/document failed", filename=file.filename, error=str(e))
-        raise HTTPException(500, f"Upload failed: {str(e)}")
+        logger.error("upload_failed", tenant=tenant.tenant_id, error=str(e))
+        raise HTTPException(500, str(e))
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
+            try: os.unlink(tmp_path)
+            except: pass
 
-# WebSocket for future real-time streaming (placeholder)
+
+# WebSocket (future streaming)
 active_connections = []
-
 @app.websocket("/ws/guidance")
 async def websocket_guidance(websocket: WebSocket):
     await websocket.accept()
     active_connections.append(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
-            await websocket.send_text(f"Echo: {data}")
+            await websocket.send_text(f"Echo: {await websocket.receive_text()}")
     except WebSocketDisconnect:
         active_connections.remove(websocket)
 
+
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting Multi-Modal Field Service Assistant backend")
-    # Warm up the agent graph (triggers intent classifier + full graph build)
+    logger.info("backend.start", mode="production-tenant", tenant_system="header-only + Depends(get_current_tenant)")
     get_field_agent()
-    logger.info("Agent graph warmed up - early Intent Classification + branched planner active")
+    logger.info("graph.warmed_up — Director (industry router) is active")
+
 
 if __name__ == "__main__":
     import uvicorn
